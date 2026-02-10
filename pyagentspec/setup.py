@@ -79,6 +79,10 @@ setup(
             "autogen-ext[ollama,openai]>=0.5.6; python_version < '3.13'",
             "autogen-agentchat>=0.5.6; python_version < '3.13'",
         ],
+        "openai-agents": [
+            "openai-agents>=0.6.9",
+            "libcst>=1.5,<2",
+        ],
         "langgraph": LANGGRAPH_DEPS,
         "langgraph_mcp": LANGGRAPH_DEPS + ["langchain-mcp-adapters"],
         "wayflow": ["wayflowcore>=25.4.3; python_version < '3.14'"],
@@ -86,8 +90,8 @@ setup(
         "wayflow_a2a": ["wayflowcore[a2a]>=25.4.3; python_version < '3.14'"],
         "wayflow_datastore": ["wayflowcore[datastore]>=25.4.3; python_version < '3.14'"],
         "agent-framework": [
-            "agent-framework==1.0.0b251028; python_version < '3.14'",
-            "agent-framework-core==1.0.0b251028; python_version < '3.14'",
+            "agent-framework>=1.0.0b260130; python_version < '3.14'",
+            "agent-framework-core>=1.0.0b260130; python_version < '3.14'",
         ],
     },
 )
