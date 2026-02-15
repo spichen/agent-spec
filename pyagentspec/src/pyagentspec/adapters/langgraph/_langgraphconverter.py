@@ -79,6 +79,7 @@ from pyagentspec.llms.llmconfig import LlmConfig as AgentSpecLlmConfig
 from pyagentspec.llms.ollamaconfig import OllamaConfig
 from pyagentspec.llms.openaicompatibleconfig import OpenAIAPIType, OpenAiCompatibleConfig
 from pyagentspec.llms.openaiconfig import OpenAiConfig
+from pyagentspec.llms.genericllmconfig import GenericLlmConfig
 from pyagentspec.llms.vllmconfig import VllmConfig
 from pyagentspec.mcp.clienttransport import ClientTransport as AgentSpecClientTransport
 from pyagentspec.mcp.clienttransport import SSEmTLSTransport as AgentSpecSSEmTLSTransport
@@ -1296,6 +1297,24 @@ class AgentSpecToLangGraphConverter:
                 callbacks=callbacks,
                 **generation_config,
             )
+        elif isinstance(llm_config, GenericLlmConfig):
+            from langchain_openai import ChatOpenAI
+
+            api_key = None
+            if llm_config.auth and llm_config.auth.credential_ref:
+                api_key = SecretStr(llm_config.auth.credential_ref)
+
+            kwargs: Dict[str, Any] = dict(
+                model=llm_config.model_id,
+                callbacks=callbacks,
+                **generation_config,
+            )
+            if llm_config.provider.endpoint:
+                kwargs["base_url"] = _prepare_openai_compatible_url(llm_config.provider.endpoint)
+            if api_key:
+                kwargs["api_key"] = api_key
+
+            return ChatOpenAI(**kwargs)
         else:
             raise NotImplementedError(
                 f"Llm model of type {llm_config.__class__.__name__} is not yet supported."

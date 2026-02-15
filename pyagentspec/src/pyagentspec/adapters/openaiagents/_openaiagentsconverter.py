@@ -23,6 +23,7 @@ from pyagentspec.llms import LlmConfig as AgentSpecLlmConfig
 from pyagentspec.llms.openaicompatibleconfig import (
     OpenAiCompatibleConfig as AgentSpecOpenAiCompatibleConfig,
 )
+from pyagentspec.llms.genericllmconfig import GenericLlmConfig as AgentSpecGenericLlmConfig
 from pyagentspec.llms.openaiconfig import OpenAiConfig as AgentSpecOpenAiConfig
 from pyagentspec.property import Property as AgentSpecProperty
 from pyagentspec.tools import Tool as AgentSpecTool
@@ -92,6 +93,23 @@ class AgentSpecToOpenAIConverter:
                 base_url += "/v1"
             client = AsyncOpenAI(api_key=llm.api_key or "", base_url=base_url)
             return OAChatCompletionsModel(llm.model_id, client)
+        elif isinstance(llm, AgentSpecGenericLlmConfig):
+            api_key = ""
+            if llm.auth and llm.auth.credential_ref:
+                api_key = llm.auth.credential_ref
+
+            if llm.provider.endpoint:
+                from openai import AsyncOpenAI
+
+                base_url = llm.provider.endpoint
+                if not base_url.startswith("http"):
+                    base_url = "http://" + base_url
+                if not base_url.endswith("v1"):
+                    base_url += "/v1"
+                client = AsyncOpenAI(api_key=api_key, base_url=base_url)
+                return OAChatCompletionsModel(llm.model_id, client)
+            else:
+                return llm.model_id
         else:
             raise NotImplementedError(f"Unsupported LlmConfig: {type(llm)}")
 

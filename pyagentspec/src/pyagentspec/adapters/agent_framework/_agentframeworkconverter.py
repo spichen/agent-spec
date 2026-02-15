@@ -25,6 +25,7 @@ from pyagentspec.component import Component as AgentSpecComponent
 from pyagentspec.llms.llmconfig import LlmConfig as AgentSpecLlmConfig
 from pyagentspec.llms.llmgenerationconfig import LlmGenerationConfig
 from pyagentspec.llms.ollamaconfig import OllamaConfig
+from pyagentspec.llms.genericllmconfig import GenericLlmConfig
 from pyagentspec.llms.openaicompatibleconfig import OpenAiCompatibleConfig
 from pyagentspec.llms.openaiconfig import OpenAiConfig
 from pyagentspec.mcp.tools import MCPTool as AgentSpecMCPTool
@@ -256,6 +257,26 @@ class AgentSpecToAgentFrameworkConverter:
             return OpenAIChatClient(
                 model_id=llm_config.model_id,
             )
+        elif isinstance(llm_config, GenericLlmConfig):
+            api_key = ""
+            if llm_config.auth and llm_config.auth.credential_ref:
+                api_key = llm_config.auth.credential_ref
+
+            kwargs: dict[str, Any] = dict(model_id=llm_config.model_id)
+            if api_key:
+                kwargs["api_key"] = api_key
+
+            if llm_config.provider.endpoint:
+                from urllib.parse import urljoin
+
+                base_url = llm_config.provider.endpoint
+                if not base_url.startswith("http://"):
+                    base_url = f"http://{base_url}"
+                if "/v1" not in base_url:
+                    base_url = urljoin(base_url + "/", "v1")
+                kwargs["base_url"] = base_url
+
+            return OpenAIChatClient(**kwargs)
         else:
             raise NotImplementedError(
                 f"Llm model of type {llm_config.__class__.__name__} is not yet supported."

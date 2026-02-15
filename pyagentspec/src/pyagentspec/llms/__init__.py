@@ -12,6 +12,11 @@ from .ocigenaiconfig import OciGenAiConfig
 from .ollamaconfig import OllamaConfig
 from .openaicompatibleconfig import OpenAiCompatibleConfig
 from .openaiconfig import OpenAiConfig
+from .authconfig import AuthConfig
+from .generationconfig import GenerationConfig
+from .genericllmconfig import GenericLlmConfig
+from .llmendpoint import LlmEndpoint
+from .providerconfig import ProviderConfig
 from .vllmconfig import VllmConfig
 
 __all__ = [
@@ -22,4 +27,10 @@ __all__ = [
     "OllamaConfig",
     "OpenAiCompatibleConfig",
     "OpenAiConfig",
+    # V2
+    "AuthConfig",
+    "GenerationConfig",
+    "GenericLlmConfig",
+    "LlmEndpoint",
+    "ProviderConfig",
 ]
