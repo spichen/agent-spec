@@ -200,21 +200,18 @@ class AgentSpecToAutogenConverter:
         elif isinstance(agentspec_llm, AgentSpecOpenAiCompatibleModel):
             return AutogenOpenAIChatCompletionClient(**_prepare_llm_args(agentspec_llm))
         elif isinstance(agentspec_llm, AgentSpecGenericLlmConfig):
+            from pyagentspec.adapters._url import prepare_openai_compatible_url
+
             metadata = getattr(agentspec_llm, "metadata", {}) or {}
             model_info_raw = metadata.get("model_info") or {}
             api_key = ""
-            if agentspec_llm.auth and agentspec_llm.auth.credential_ref:
-                api_key = agentspec_llm.auth.credential_ref
+            if agentspec_llm.auth:
+                api_key = agentspec_llm.auth.resolve_credential()
 
             kwargs: Dict[str, Any] = dict(model=agentspec_llm.model_id, api_key=api_key)
 
             if agentspec_llm.provider.endpoint:
-                base_url = agentspec_llm.provider.endpoint
-                if not base_url.startswith("http://"):
-                    base_url = f"http://{base_url}"
-                if "/v1" not in base_url:
-                    base_url = urljoin(base_url + "/", "v1")
-                kwargs["base_url"] = base_url
+                kwargs["base_url"] = prepare_openai_compatible_url(agentspec_llm.provider.endpoint)
 
             family = model_info_raw.get(
                 "family",

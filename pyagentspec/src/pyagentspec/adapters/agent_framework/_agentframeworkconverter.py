@@ -258,23 +258,18 @@ class AgentSpecToAgentFrameworkConverter:
                 model_id=llm_config.model_id,
             )
         elif isinstance(llm_config, GenericLlmConfig):
+            from pyagentspec.adapters._url import prepare_openai_compatible_url
+
             api_key = ""
-            if llm_config.auth and llm_config.auth.credential_ref:
-                api_key = llm_config.auth.credential_ref
+            if llm_config.auth:
+                api_key = llm_config.auth.resolve_credential()
 
             kwargs: dict[str, Any] = dict(model_id=llm_config.model_id)
             if api_key:
                 kwargs["api_key"] = api_key
 
             if llm_config.provider.endpoint:
-                from urllib.parse import urljoin
-
-                base_url = llm_config.provider.endpoint
-                if not base_url.startswith("http://"):
-                    base_url = f"http://{base_url}"
-                if "/v1" not in base_url:
-                    base_url = urljoin(base_url + "/", "v1")
-                kwargs["base_url"] = base_url
+                kwargs["base_url"] = prepare_openai_compatible_url(llm_config.provider.endpoint)
 
             return OpenAIChatClient(**kwargs)
         else:

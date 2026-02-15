@@ -4,6 +4,7 @@
 # (LICENSE-APACHE or http://www.apache.org/licenses/LICENSE-2.0) or Universal Permissive License
 # (UPL) 1.0 (LICENSE-UPL or https://oss.oracle.com/licenses/upl), at your option.
 
+import pytest
 import yaml
 
 from pyagentspec.agent import Agent
@@ -253,3 +254,29 @@ def test_v1_classes_still_work() -> None:
         components_registry={"openai-v1.api_key": "secret"},
     )
     assert openai_config == deserialized_openai
+
+
+def test_resolve_credential_from_env(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("MY_API_KEY", "secret-from-env")
+    auth = AuthConfig(type="api_key", credential_ref="MY_API_KEY")
+    assert auth.resolve_credential() == "secret-from-env"
+
+
+def test_resolve_credential_literal_fallback(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.delenv("not_an_env_var", raising=False)
+    auth = AuthConfig(type="api_key", credential_ref="not_an_env_var")
+    assert auth.resolve_credential() == "not_an_env_var"
+
+
+def test_resolve_credential_none() -> None:
+    auth = AuthConfig(type="api_key")
+    assert auth.resolve_credential() == ""
+
+
+def test_llm_endpoint_auth_is_sensitive() -> None:
+    from pydantic.fields import FieldInfo
+
+    from pyagentspec.sensitive_field import is_sensitive_field
+
+    field: FieldInfo = LlmEndpoint.model_fields["auth"]
+    assert is_sensitive_field(field)

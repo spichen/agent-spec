@@ -6,6 +6,7 @@
 
 """This module defines the auth configuration for generic LLM configs."""
 
+import os
 from typing import Any, Dict, Optional
 
 from pydantic import BaseModel
@@ -24,7 +25,21 @@ class AuthConfig(BaseModel):
     """Auth mechanism identifier (e.g. ``"api_key"``, ``"iam_role"``)"""
 
     credential_ref: Optional[str] = None
-    """Primary credential or environment variable reference"""
+    """Reference to a credential. If the value matches an environment variable
+    name, :meth:`resolve_credential` returns the variable's value; otherwise
+    the literal string is returned."""
+
+    def resolve_credential(self) -> str:
+        """Resolve ``credential_ref`` to an actual credential value.
+
+        Resolution order:
+        1. If ``credential_ref`` is ``None`` or empty, return ``""``.
+        2. If an environment variable with that exact name exists, return its value.
+        3. Otherwise treat ``credential_ref`` as the literal credential.
+        """
+        if not self.credential_ref:
+            return ""
+        return os.environ.get(self.credential_ref, self.credential_ref)
 
     model_config = {"extra": "allow"}
 

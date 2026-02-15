@@ -1301,8 +1301,10 @@ class AgentSpecToLangGraphConverter:
             from langchain_openai import ChatOpenAI
 
             api_key = None
-            if llm_config.auth and llm_config.auth.credential_ref:
-                api_key = SecretStr(llm_config.auth.credential_ref)
+            if llm_config.auth:
+                resolved = llm_config.auth.resolve_credential()
+                if resolved:
+                    api_key = SecretStr(resolved)
 
             kwargs: Dict[str, Any] = dict(
                 model=llm_config.model_id,
@@ -1473,31 +1475,14 @@ def _add_session_tools_to_registry(
 
 
 def _prepare_openai_compatible_url(url: str) -> str:
+    """Formats a URL for an OpenAI-compatible server.
+
+    Delegates to the shared :func:`~pyagentspec.adapters._url.prepare_openai_compatible_url`
+    implementation.
     """
-    Correctly formats a URL for an OpenAI-compatible server.
+    from pyagentspec.adapters._url import prepare_openai_compatible_url
 
-    This function is robust and handles multiple formats:
-    - Ensures a scheme (http, https) is present, defaulting to 'http'.
-    - Replaces any existing path with exactly '/v1'.
-
-    Examples:
-        - "localhost:8000"          -> "http://localhost:8000/v1"
-        - "127.0.0.1:5000"          -> "http://127.0.0.1:5000/v1"
-        - "https://api.example.com"   -> "https://api.example.com/v1"
-        - "http://my-host/api/v2"   -> "http://my-host/v1"
-    """
-    from urllib.parse import urlparse, urlunparse
-
-    url = url.strip()
-    if not url.startswith(("http://", "https://")):
-        url = f"http://{url}"
-    parsed_url = urlparse(url)
-    # parsed_url is a namedtuple object, and it has the _replace method
-    # this is actually a public facing method, check python documentation of namedtuple
-    v1_url_parts = parsed_url._replace(path="/v1", params="", query="", fragment="")
-    final_url = urlunparse(v1_url_parts)
-
-    return str(final_url)
+    return prepare_openai_compatible_url(url)
 
 
 def _are_mcp_tool_spec_and_langchain_schemas_equal(

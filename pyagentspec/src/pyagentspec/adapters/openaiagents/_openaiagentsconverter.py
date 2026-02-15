@@ -95,17 +95,15 @@ class AgentSpecToOpenAIConverter:
             return OAChatCompletionsModel(llm.model_id, client)
         elif isinstance(llm, AgentSpecGenericLlmConfig):
             api_key = ""
-            if llm.auth and llm.auth.credential_ref:
-                api_key = llm.auth.credential_ref
+            if llm.auth:
+                api_key = llm.auth.resolve_credential()
 
             if llm.provider.endpoint:
                 from openai import AsyncOpenAI
 
-                base_url = llm.provider.endpoint
-                if not base_url.startswith("http"):
-                    base_url = "http://" + base_url
-                if not base_url.endswith("v1"):
-                    base_url += "/v1"
+                from pyagentspec.adapters._url import prepare_openai_compatible_url
+
+                base_url = prepare_openai_compatible_url(llm.provider.endpoint)
                 client = AsyncOpenAI(api_key=api_key, base_url=base_url)
                 return OAChatCompletionsModel(llm.model_id, client)
             else:

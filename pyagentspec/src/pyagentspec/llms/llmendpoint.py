@@ -12,6 +12,7 @@ from pydantic import BaseModel
 
 from pyagentspec.llms.authconfig import AuthConfig
 from pyagentspec.llms.providerconfig import ProviderConfig
+from pyagentspec.sensitive_field import SensitiveField
 
 
 class LlmEndpoint(BaseModel):
@@ -28,8 +29,9 @@ class LlmEndpoint(BaseModel):
     provider: ProviderConfig
     """Provider configuration for this endpoint"""
 
-    auth: Optional[AuthConfig] = None
-    """Optional auth override for this endpoint"""
+    auth: SensitiveField[Optional[AuthConfig]] = None
+    """Optional auth override for this endpoint. Excluded from exports and
+    replaced by a ``$component_ref`` reference during serialization."""
 
     provider_extensions: Optional[Dict[str, Any]] = None
     """Non-portable escape hatch for provider-specific options"""
