@@ -258,14 +258,20 @@ def test_v1_classes_still_work() -> None:
 
 def test_resolve_credential_from_env(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setenv("MY_API_KEY", "secret-from-env")
-    auth = AuthConfig(type="api_key", credential_ref="MY_API_KEY")
+    auth = AuthConfig(type="api_key", credential_ref="$env:MY_API_KEY")
     assert auth.resolve_credential() == "secret-from-env"
 
 
-def test_resolve_credential_literal_fallback(monkeypatch: pytest.MonkeyPatch) -> None:
-    monkeypatch.delenv("not_an_env_var", raising=False)
-    auth = AuthConfig(type="api_key", credential_ref="not_an_env_var")
-    assert auth.resolve_credential() == "not_an_env_var"
+def test_resolve_credential_env_missing_raises(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.delenv("MISSING_VAR", raising=False)
+    auth = AuthConfig(type="api_key", credential_ref="$env:MISSING_VAR")
+    with pytest.raises(ValueError, match="MISSING_VAR"):
+        auth.resolve_credential()
+
+
+def test_resolve_credential_literal() -> None:
+    auth = AuthConfig(type="api_key", credential_ref="sk-abc123")
+    assert auth.resolve_credential() == "sk-abc123"
 
 
 def test_resolve_credential_none() -> None:

@@ -11,21 +11,25 @@ from urllib.parse import urlparse, urlunparse
 
 def prepare_openai_compatible_url(url: str) -> str:
     """
-    Correctly formats a URL for an OpenAI-compatible server.
+    Normalise a URL for an OpenAI-compatible server.
 
-    This function is robust and handles multiple formats:
-    - Ensures a scheme (http, https) is present, defaulting to 'http'.
-    - Replaces any existing path with exactly '/v1'.
+    - Ensures a scheme (http, https) is present, defaulting to ``http``.
+    - If no meaningful path is provided (empty or ``/``), appends ``/v1``.
+    - If the caller already supplies a path, it is preserved as-is so that
+      non-OpenAI providers (Azure, Anthropic, custom gateways, …) work
+      without their paths being silently overwritten.
 
     Examples:
-        - "localhost:8000"            -> "http://localhost:8000/v1"
-        - "127.0.0.1:5000"           -> "http://127.0.0.1:5000/v1"
-        - "https://api.example.com"  -> "https://api.example.com/v1"
-        - "http://my-host/api/v2"    -> "http://my-host/v1"
+        - "localhost:8000"                        -> "http://localhost:8000/v1"
+        - "127.0.0.1:5000"                       -> "http://127.0.0.1:5000/v1"
+        - "https://api.example.com"               -> "https://api.example.com/v1"
+        - "https://api.example.com/v2/beta"       -> "https://api.example.com/v2/beta"
+        - "http://my-host/custom/path"            -> "http://my-host/custom/path"
     """
     url = url.strip()
     if not url.startswith(("http://", "https://")):
         url = f"http://{url}"
-    parsed_url = urlparse(url)
-    v1_url_parts = parsed_url._replace(path="/v1", params="", query="", fragment="")
-    return str(urlunparse(v1_url_parts))
+    parsed = urlparse(url)
+    if not parsed.path or parsed.path == "/":
+        parsed = parsed._replace(path="/v1")
+    return str(urlunparse(parsed))

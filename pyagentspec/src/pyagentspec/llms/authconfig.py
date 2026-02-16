@@ -12,6 +12,9 @@ from typing import Any, Dict, Optional
 from pydantic import BaseModel
 
 
+_ENV_PREFIX = "$env:"
+
+
 class AuthConfig(BaseModel):
     """
     Configuration for LLM authentication.
@@ -25,21 +28,39 @@ class AuthConfig(BaseModel):
     """Auth mechanism identifier (e.g. ``"api_key"``, ``"iam_role"``)"""
 
     credential_ref: Optional[str] = None
-    """Reference to a credential. If the value matches an environment variable
-    name, :meth:`resolve_credential` returns the variable's value; otherwise
-    the literal string is returned."""
+    """Reference to a credential.
+
+    Use the ``$env:`` prefix to resolve an environment variable at runtime::
+
+        credential_ref="$env:OPENAI_API_KEY"   # reads os.environ["OPENAI_API_KEY"]
+
+    Without the prefix the value is treated as a literal credential::
+
+        credential_ref="sk-abc123"             # used as-is
+    """
 
     def resolve_credential(self) -> str:
         """Resolve ``credential_ref`` to an actual credential value.
 
         Resolution order:
         1. If ``credential_ref`` is ``None`` or empty, return ``""``.
-        2. If an environment variable with that exact name exists, return its value.
-        3. Otherwise treat ``credential_ref`` as the literal credential.
+        2. If ``credential_ref`` starts with ``$env:``, look up the named
+           environment variable.  Raises :class:`ValueError` when the
+           variable is not set.
+        3. Otherwise return ``credential_ref`` as a literal credential.
         """
         if not self.credential_ref:
             return ""
-        return os.environ.get(self.credential_ref, self.credential_ref)
+        if self.credential_ref.startswith(_ENV_PREFIX):
+            var_name = self.credential_ref[len(_ENV_PREFIX) :]
+            value = os.environ.get(var_name)
+            if value is None:
+                raise ValueError(
+                    f"Environment variable '{var_name}' referenced by "
+                    f"credential_ref is not set"
+                )
+            return value
+        return self.credential_ref
 
     model_config = {"extra": "allow"}
 

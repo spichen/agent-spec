@@ -14,13 +14,17 @@ from pyagentspec.adapters._url import prepare_openai_compatible_url
 @pytest.mark.parametrize(
     "input_url,expected",
     [
+        # No path → /v1 appended
         ("localhost:8000", "http://localhost:8000/v1"),
         ("127.0.0.1:5000", "http://127.0.0.1:5000/v1"),
         ("http://localhost:8000", "http://localhost:8000/v1"),
         ("https://api.example.com", "https://api.example.com/v1"),
-        ("https://api.example.com/v2/beta", "https://api.example.com/v1"),
-        ("http://my-host/api/v2", "http://my-host/v1"),
         ("  http://localhost:8000  ", "http://localhost:8000/v1"),
+        # Explicit path → preserved as-is
+        ("https://api.example.com/v2/beta", "https://api.example.com/v2/beta"),
+        ("http://my-host/api/v2", "http://my-host/api/v2"),
+        ("http://my-host/v1", "http://my-host/v1"),
+        ("https://azure.openai.com/openai/deployments/gpt4", "https://azure.openai.com/openai/deployments/gpt4"),
     ],
 )
 def test_prepare_openai_compatible_url(input_url: str, expected: str) -> None:
