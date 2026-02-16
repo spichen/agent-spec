@@ -79,6 +79,7 @@ from pyagentspec.llms.llmconfig import LlmConfig as AgentSpecLlmConfig
 from pyagentspec.llms.ollamaconfig import OllamaConfig
 from pyagentspec.llms.openaicompatibleconfig import OpenAIAPIType, OpenAiCompatibleConfig
 from pyagentspec.llms.openaiconfig import OpenAiConfig
+from pyagentspec.llms.genericllmconfig import GenericLlmConfig
 from pyagentspec.llms.vllmconfig import VllmConfig
 from pyagentspec.mcp.clienttransport import ClientTransport as AgentSpecClientTransport
 from pyagentspec.mcp.clienttransport import SSEmTLSTransport as AgentSpecSSEmTLSTransport
@@ -1296,6 +1297,26 @@ class AgentSpecToLangGraphConverter:
                 callbacks=callbacks,
                 **generation_config,
             )
+        elif isinstance(llm_config, GenericLlmConfig):
+            from langchain_openai import ChatOpenAI
+
+            api_key = None
+            if llm_config.auth:
+                resolved = llm_config.auth.resolve_credential()
+                if resolved:
+                    api_key = SecretStr(resolved)
+
+            kwargs: Dict[str, Any] = dict(
+                model=llm_config.model_id,
+                callbacks=callbacks,
+                **generation_config,
+            )
+            if llm_config.provider.endpoint:
+                kwargs["base_url"] = _prepare_openai_compatible_url(llm_config.provider.endpoint)
+            if api_key:
+                kwargs["api_key"] = api_key
+
+            return ChatOpenAI(**kwargs)
         else:
             raise NotImplementedError(
                 f"Llm model of type {llm_config.__class__.__name__} is not yet supported."
@@ -1454,31 +1475,14 @@ def _add_session_tools_to_registry(
 
 
 def _prepare_openai_compatible_url(url: str) -> str:
+    """Formats a URL for an OpenAI-compatible server.
+
+    Delegates to the shared :func:`~pyagentspec.adapters._url.prepare_openai_compatible_url`
+    implementation.
     """
-    Correctly formats a URL for an OpenAI-compatible server.
+    from pyagentspec.adapters._url import prepare_openai_compatible_url
 
-    This function is robust and handles multiple formats:
-    - Ensures a scheme (http, https) is present, defaulting to 'http'.
-    - Replaces any existing path with exactly '/v1'.
-
-    Examples:
-        - "localhost:8000"          -> "http://localhost:8000/v1"
-        - "127.0.0.1:5000"          -> "http://127.0.0.1:5000/v1"
-        - "https://api.example.com"   -> "https://api.example.com/v1"
-        - "http://my-host/api/v2"   -> "http://my-host/v1"
-    """
-    from urllib.parse import urlparse, urlunparse
-
-    url = url.strip()
-    if not url.startswith(("http://", "https://")):
-        url = f"http://{url}"
-    parsed_url = urlparse(url)
-    # parsed_url is a namedtuple object, and it has the _replace method
-    # this is actually a public facing method, check python documentation of namedtuple
-    v1_url_parts = parsed_url._replace(path="/v1", params="", query="", fragment="")
-    final_url = urlunparse(v1_url_parts)
-
-    return str(final_url)
+    return prepare_openai_compatible_url(url)
 
 
 def _are_mcp_tool_spec_and_langchain_schemas_equal(

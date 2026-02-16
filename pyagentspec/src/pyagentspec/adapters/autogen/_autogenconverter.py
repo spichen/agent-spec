@@ -32,6 +32,7 @@ from pyagentspec.llms.ollamaconfig import OllamaConfig as AgentSpecOllamaModel
 from pyagentspec.llms.openaicompatibleconfig import (
     OpenAiCompatibleConfig as AgentSpecOpenAiCompatibleModel,
 )
+from pyagentspec.llms.genericllmconfig import GenericLlmConfig as AgentSpecGenericLlmConfig
 from pyagentspec.llms.openaiconfig import OpenAiConfig as AgentSpecOpenAiConfig
 from pyagentspec.property import Property as AgentSpecProperty
 from pyagentspec.property import _empty_default as _agentspec_empty_default
@@ -198,6 +199,35 @@ class AgentSpecToAutogenConverter:
             return AutogenOllamaChatCompletionClient(**_prepare_llm_args(agentspec_llm))
         elif isinstance(agentspec_llm, AgentSpecOpenAiCompatibleModel):
             return AutogenOpenAIChatCompletionClient(**_prepare_llm_args(agentspec_llm))
+        elif isinstance(agentspec_llm, AgentSpecGenericLlmConfig):
+            from pyagentspec.adapters._url import prepare_openai_compatible_url
+
+            metadata = getattr(agentspec_llm, "metadata", {}) or {}
+            model_info_raw = metadata.get("model_info") or {}
+            api_key = ""
+            if agentspec_llm.auth:
+                api_key = agentspec_llm.auth.resolve_credential()
+
+            kwargs: Dict[str, Any] = dict(model=agentspec_llm.model_id, api_key=api_key)
+
+            if agentspec_llm.provider.endpoint:
+                kwargs["base_url"] = prepare_openai_compatible_url(agentspec_llm.provider.endpoint)
+
+            family = model_info_raw.get(
+                "family",
+                agentspec_llm.model_id
+                if fits_literal(agentspec_llm.model_id, AutogenModelFamily.ANY)
+                else AutogenModelFamily.UNKNOWN,
+            )
+            kwargs["model_info"] = AutogenModelInfo(
+                vision=model_info_raw.get("vision", True),
+                function_calling=model_info_raw.get("function_calling", True),
+                json_output=model_info_raw.get("json_output", True),
+                family=family,
+                structured_output=model_info_raw.get("structured_output", True),
+            )
+
+            return AutogenOpenAIChatCompletionClient(**kwargs)
         else:
             raise NotImplementedError(
                 f"The provided LlmConfig type `{type(agentspec_llm)}` is not supported in autogen yet."

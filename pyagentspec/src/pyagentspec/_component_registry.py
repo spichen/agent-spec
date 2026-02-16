@@ -43,6 +43,7 @@ from pyagentspec.flows.nodes import (
     ToolNode,
 )
 from pyagentspec.llms import (
+    GenericLlmConfig,
     OciGenAiConfig,
     OllamaConfig,
     OpenAiCompatibleConfig,
@@ -101,6 +102,7 @@ BUILTIN_CLASS_MAP: Mapping[str, type[Component]] = {
     "EndNode": EndNode,
     "Flow": Flow,
     "FlowNode": FlowNode,
+    "GenericLlmConfig": GenericLlmConfig,
     "InMemoryCollectionDatastore": InMemoryCollectionDatastore,
     "InputMessageNode": InputMessageNode,
     "LlmConfig": LlmConfig,
