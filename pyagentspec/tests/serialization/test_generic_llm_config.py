@@ -225,16 +225,16 @@ def test_min_agentspec_version_is_v26_2_0() -> None:
     assert config.min_agentspec_version.value == "26.2.0"
 
 
-def test_v1_classes_still_work() -> None:
+def test_vllm_and_openai_classes_still_work() -> None:
     vllm_config = VllmConfig(
-        id="vllm-v1",
+        id="vllm-test",
         name="vllm-test",
         model_id="model1",
         url="http://some.where",
         default_generation_parameters=LlmGenerationConfig(temperature=0.3),
     )
     openai_config = OpenAiConfig(
-        id="openai-v1",
+        id="openai-test",
         name="openai-test",
         model_id="gpt-4",
         api_key="secret",
@@ -251,7 +251,7 @@ def test_v1_classes_still_work() -> None:
     serialized_openai = serializer.to_yaml(openai_config)
     deserialized_openai = AgentSpecDeserializer().from_yaml(
         serialized_openai,
-        components_registry={"openai-v1.api_key": "secret"},
+        components_registry={"openai-test.api_key": "secret"},
     )
     assert openai_config == deserialized_openai
 
