@@ -3018,6 +3018,11 @@
           ],
           "title": "Metadata"
         },
+        "requires_confirmation": {
+          "default": false,
+          "title": "Requires Confirmation",
+          "type": "boolean"
+        },
         "client_transport": {
           "$ref": "#/$defs/ClientTransport"
         },
