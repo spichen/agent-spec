@@ -27,7 +27,7 @@ __all__ = [
     "OllamaConfig",
     "OpenAiCompatibleConfig",
     "OpenAiConfig",
-    # V2
+    # Generic
     "AuthConfig",
     "GenerationConfig",
     "GenericLlmConfig",

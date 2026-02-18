@@ -1298,25 +1298,64 @@ class AgentSpecToLangGraphConverter:
                 **generation_config,
             )
         elif isinstance(llm_config, GenericLlmConfig):
-            from langchain_openai import ChatOpenAI
-
             api_key = None
             if llm_config.auth:
                 resolved = llm_config.auth.resolve_credential()
                 if resolved:
                     api_key = SecretStr(resolved)
 
-            kwargs: Dict[str, Any] = dict(
-                model=llm_config.model_id,
-                callbacks=callbacks,
-                **generation_config,
-            )
-            if llm_config.provider.endpoint:
-                kwargs["base_url"] = _prepare_openai_compatible_url(llm_config.provider.endpoint)
-            if api_key:
-                kwargs["api_key"] = api_key
+            provider_type = llm_config.provider.type
 
-            return ChatOpenAI(**kwargs)
+            if provider_type == "vllm":
+                from langchain_openai import ChatOpenAI
+
+                return ChatOpenAI(
+                    model=llm_config.model_id,
+                    api_key=api_key or SecretStr("EMPTY"),
+                    base_url=_prepare_openai_compatible_url(llm_config.provider.endpoint),
+                    use_responses_api=False,
+                    callbacks=callbacks,
+                    **generation_config,
+                )
+            elif provider_type == "ollama":
+                from langchain_ollama import ChatOllama
+
+                ollama_generation_config = {
+                    "temperature": generation_config.get("temperature"),
+                    "num_predict": generation_config.get("max_completion_tokens"),
+                    "top_p": generation_config.get("top_p"),
+                }
+                return ChatOllama(
+                    base_url=llm_config.provider.endpoint,
+                    model=llm_config.model_id,
+                    callbacks=callbacks,
+                    **ollama_generation_config,
+                )
+            elif provider_type == "openai":
+                from langchain_openai import ChatOpenAI
+
+                kwargs: Dict[str, Any] = dict(
+                    model=llm_config.model_id,
+                    use_responses_api=False,
+                    callbacks=callbacks,
+                    **generation_config,
+                )
+                if api_key:
+                    kwargs["api_key"] = api_key
+                return ChatOpenAI(**kwargs)
+            else:
+                from langchain_openai import ChatOpenAI
+
+                kwargs = dict(
+                    model=llm_config.model_id,
+                    callbacks=callbacks,
+                    **generation_config,
+                )
+                if llm_config.provider.endpoint:
+                    kwargs["base_url"] = _prepare_openai_compatible_url(llm_config.provider.endpoint)
+                if api_key:
+                    kwargs["api_key"] = api_key
+                return ChatOpenAI(**kwargs)
         else:
             raise NotImplementedError(
                 f"Llm model of type {llm_config.__class__.__name__} is not yet supported."

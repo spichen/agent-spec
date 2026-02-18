@@ -264,14 +264,32 @@ class AgentSpecToAgentFrameworkConverter:
             if llm_config.auth:
                 api_key = llm_config.auth.resolve_credential()
 
-            kwargs: dict[str, Any] = dict(model_id=llm_config.model_id)
-            if api_key:
-                kwargs["api_key"] = api_key
+            provider_type = llm_config.provider.type
 
-            if llm_config.provider.endpoint:
-                kwargs["base_url"] = prepare_openai_compatible_url(llm_config.provider.endpoint)
-
-            return OpenAIChatClient(**kwargs)
+            if provider_type == "vllm":
+                return OpenAIChatClient(
+                    api_key=api_key or "openai",
+                    base_url=prepare_openai_compatible_url(llm_config.provider.endpoint),
+                    model_id=llm_config.model_id,
+                )
+            elif provider_type == "ollama":
+                return OpenAIChatClient(
+                    api_key=api_key or "ollama",
+                    base_url=llm_config.provider.endpoint,
+                    model_id=llm_config.model_id,
+                )
+            elif provider_type == "openai":
+                kwargs: dict[str, Any] = dict(model_id=llm_config.model_id)
+                if api_key:
+                    kwargs["api_key"] = api_key
+                return OpenAIChatClient(**kwargs)
+            else:
+                kwargs = dict(model_id=llm_config.model_id)
+                if api_key:
+                    kwargs["api_key"] = api_key
+                if llm_config.provider.endpoint:
+                    kwargs["base_url"] = prepare_openai_compatible_url(llm_config.provider.endpoint)
+                return OpenAIChatClient(**kwargs)
         else:
             raise NotImplementedError(
                 f"Llm model of type {llm_config.__class__.__name__} is not yet supported."

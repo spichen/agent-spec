@@ -208,18 +208,13 @@ class AgentSpecToAutogenConverter:
             if agentspec_llm.auth:
                 api_key = agentspec_llm.auth.resolve_credential()
 
-            kwargs: Dict[str, Any] = dict(model=agentspec_llm.model_id, api_key=api_key)
-
-            if agentspec_llm.provider.endpoint:
-                kwargs["base_url"] = prepare_openai_compatible_url(agentspec_llm.provider.endpoint)
-
             family = model_info_raw.get(
                 "family",
                 agentspec_llm.model_id
                 if fits_literal(agentspec_llm.model_id, AutogenModelFamily.ANY)
                 else AutogenModelFamily.UNKNOWN,
             )
-            kwargs["model_info"] = AutogenModelInfo(
+            model_info = AutogenModelInfo(
                 vision=model_info_raw.get("vision", True),
                 function_calling=model_info_raw.get("function_calling", True),
                 json_output=model_info_raw.get("json_output", True),
@@ -227,7 +222,37 @@ class AgentSpecToAutogenConverter:
                 structured_output=model_info_raw.get("structured_output", True),
             )
 
-            return AutogenOpenAIChatCompletionClient(**kwargs)
+            provider_type = agentspec_llm.provider.type
+
+            if provider_type == "vllm":
+                kwargs: Dict[str, Any] = dict(
+                    model=agentspec_llm.model_id,
+                    api_key=api_key or "",
+                    base_url=prepare_openai_compatible_url(agentspec_llm.provider.endpoint),
+                    model_info=model_info,
+                )
+                return AutogenOpenAIChatCompletionClient(**kwargs)
+            elif provider_type == "ollama":
+                kwargs = dict(
+                    model=agentspec_llm.model_id,
+                    api_key=api_key or "",
+                    base_url=prepare_openai_compatible_url(agentspec_llm.provider.endpoint),
+                    model_info=model_info,
+                )
+                return AutogenOllamaChatCompletionClient(**kwargs)
+            elif provider_type == "openai":
+                kwargs = dict(
+                    model=agentspec_llm.model_id,
+                    model_info=model_info,
+                )
+                if api_key:
+                    kwargs["api_key"] = api_key
+                return AutogenOpenAIChatCompletionClient(**kwargs)
+            else:
+                kwargs = dict(model=agentspec_llm.model_id, api_key=api_key, model_info=model_info)
+                if agentspec_llm.provider.endpoint:
+                    kwargs["base_url"] = prepare_openai_compatible_url(agentspec_llm.provider.endpoint)
+                return AutogenOpenAIChatCompletionClient(**kwargs)
         else:
             raise NotImplementedError(
                 f"The provided LlmConfig type `{type(agentspec_llm)}` is not supported in autogen yet."

@@ -98,16 +98,37 @@ class AgentSpecToOpenAIConverter:
             if llm.auth:
                 api_key = llm.auth.resolve_credential()
 
-            if llm.provider.endpoint:
+            provider_type = llm.provider.type
+
+            if provider_type == "vllm":
                 from openai import AsyncOpenAI
 
                 from pyagentspec.adapters._url import prepare_openai_compatible_url
 
                 base_url = prepare_openai_compatible_url(llm.provider.endpoint)
-                client = AsyncOpenAI(api_key=api_key, base_url=base_url)
+                client = AsyncOpenAI(api_key=api_key or "", base_url=base_url)
                 return OAChatCompletionsModel(llm.model_id, client)
-            else:
+            elif provider_type == "ollama":
+                from openai import AsyncOpenAI
+
+                from pyagentspec.adapters._url import prepare_openai_compatible_url
+
+                base_url = prepare_openai_compatible_url(llm.provider.endpoint)
+                client = AsyncOpenAI(api_key=api_key or "", base_url=base_url)
+                return OAChatCompletionsModel(llm.model_id, client)
+            elif provider_type == "openai":
                 return llm.model_id
+            else:
+                if llm.provider.endpoint:
+                    from openai import AsyncOpenAI
+
+                    from pyagentspec.adapters._url import prepare_openai_compatible_url
+
+                    base_url = prepare_openai_compatible_url(llm.provider.endpoint)
+                    client = AsyncOpenAI(api_key=api_key, base_url=base_url)
+                    return OAChatCompletionsModel(llm.model_id, client)
+                else:
+                    return llm.model_id
         else:
             raise NotImplementedError(f"Unsupported LlmConfig: {type(llm)}")
 
