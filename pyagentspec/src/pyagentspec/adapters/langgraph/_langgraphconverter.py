@@ -55,6 +55,7 @@ from pyagentspec.adapters.langgraph._types import (
     interrupt,
     langchain_agents,
     langgraph_graph,
+    langgraph_swarm,
 )
 from pyagentspec.adapters.langgraph.mcp_utils import _HttpxClientFactory, run_async_in_sync
 from pyagentspec.adapters.langgraph.tracing import (
@@ -79,6 +80,14 @@ from pyagentspec.flows.nodes import OutputMessageNode as AgentSpecOutputMessageN
 from pyagentspec.flows.nodes import StartNode as AgentSpecStartNode
 from pyagentspec.flows.nodes import ToolNode as AgentSpecToolNode
 from pyagentspec.llms.llmconfig import LlmConfig as AgentSpecLlmConfig
+from pyagentspec.llms.ociclientconfig import (
+    OciClientConfig,
+    OciClientConfigWithApiKey,
+    OciClientConfigWithInstancePrincipal,
+    OciClientConfigWithResourcePrincipal,
+    OciClientConfigWithSecurityToken,
+)
+from pyagentspec.llms.ocigenaiconfig import OciGenAiConfig
 from pyagentspec.llms.ollamaconfig import OllamaConfig
 from pyagentspec.llms.openaicompatibleconfig import OpenAIAPIType, OpenAiCompatibleConfig
 from pyagentspec.llms.openaiconfig import OpenAiConfig
@@ -101,6 +110,8 @@ from pyagentspec.property import Property as AgentSpecProperty
 from pyagentspec.property import StringProperty as AgentSpecStringProperty
 from pyagentspec.property import _empty_default as _agentspec_empty_default
 from pyagentspec.property import json_schemas_have_same_type
+from pyagentspec.swarm import HandoffMode as AgentSpecHandoffMode
+from pyagentspec.swarm import Swarm as AgentSpecSwarm
 from pyagentspec.tools import ClientTool as AgentSpecClientTool
 from pyagentspec.tools import RemoteTool as AgentSpecRemoteTool
 from pyagentspec.tools import ServerTool as AgentSpecServerTool
@@ -206,6 +217,14 @@ class AgentSpecToLangGraphConverter:
     ) -> Any:
         if isinstance(agentspec_component, AgentSpecAgent):
             return self._agent_convert_to_langgraph(
+                agentspec_component,
+                tool_registry=tool_registry,
+                converted_components=converted_components,
+                checkpointer=checkpointer,
+                config=config,
+            )
+        elif isinstance(agentspec_component, AgentSpecSwarm):
+            return self._swarm_convert_to_langgraph(
                 agentspec_component,
                 tool_registry=tool_registry,
                 converted_components=converted_components,
@@ -947,6 +966,74 @@ class AgentSpecToLangGraphConverter:
             filtered_tools = [remote_tools[name] for name in filter_map]
         return filtered_tools
 
+    def _swarm_convert_to_langgraph(
+        self,
+        agentspec_component: AgentSpecSwarm,
+        tool_registry: Dict[str, LangGraphTool],
+        converted_components: Dict[str, Any],
+        checkpointer: Optional[Checkpointer],
+        config: RunnableConfig,
+    ) -> CompiledStateGraph[Any, Any, Any]:
+        if agentspec_component.handoff is AgentSpecHandoffMode.NEVER:
+            # As of now, we cannot control what langgraph-swarm does internally in terms of conversation sharing.
+            # The closest behaviors are OPTIONAL (probably best) or ALWAYS, but NEVER is not really supported.
+            raise ValueError(
+                "Handoff mode NEVER is not supported for conversion in LangGraph adapter"
+            )
+        agents: dict[str, AgentSpecAgent] = {
+            # LangGraph distinguishes agents by name, so we use names here.
+            # We also assume to get only agents in relationships.
+            agent.name: cast(AgentSpecAgent, agent)
+            # Relationships are tuples of (from_agent, to_agent)
+            for agent in (e for r in agentspec_component.relationships for e in r)
+        }
+        for agent in agents.values():
+            # Since handoff is performed with tools, we can only support agents in relationships for now
+            # Note that the fact that we called `cast` before does not change the actual type of the agent
+            if not isinstance(agent, AgentSpecAgent):
+                raise ValueError(
+                    f"Only Agents are supported as part of a Swarm in the LangGraph adapter, received {type(agent)} instead."
+                )
+            # We convert the agents event though we do not use them in langgraph, since we have to append
+            # the handoff tools, but at least this way the agents will be created and stored in the registry
+            # of converted components in case they are used in other places
+            self.convert(
+                agent,
+                tool_registry=tool_registry,
+                converted_components=converted_components,
+                checkpointer=checkpointer,
+                config=config,
+            )
+        handoffs: dict[str, list[str]] = {agent_name: [] for agent_name in agents}
+        for from_agent, to_agent in agentspec_component.relationships:
+            handoffs[from_agent.name].append(to_agent.name)
+        # We re-create the agents with the additional handoff tools
+        langgraph_agents: list[CompiledStateGraph[Any, Any, Any]] = [
+            self._create_react_agent_with_given_info(
+                agent=agent,
+                name=agent.name,
+                system_prompt=agent.system_prompt,
+                llm_config=agent.llm_config,
+                tools=agent.tools,
+                toolboxes=agent.toolboxes,
+                inputs=agent.inputs or [],
+                outputs=agent.outputs or [],
+                tool_registry=tool_registry,
+                converted_components=converted_components,
+                checkpointer=checkpointer,
+                config=config,
+                additional_langgraph_tools=[
+                    langgraph_swarm.create_handoff_tool(agent_name=to_agent_name)
+                    for to_agent_name in handoffs.get(agent.name, [])
+                ],
+            )
+            for agent in agents.values()
+        ]
+        return langgraph_swarm.create_swarm(
+            agents=langgraph_agents,  # type: ignore
+            default_active_agent=agentspec_component.first_agent.name,
+        ).compile(name=agentspec_component.name, checkpointer=checkpointer)
+
     def _create_react_agent_with_given_info(
         self,
         *,
@@ -962,6 +1049,7 @@ class AgentSpecToLangGraphConverter:
         converted_components: Dict[str, Any],
         checkpointer: Optional[Checkpointer],
         config: RunnableConfig,
+        additional_langgraph_tools: Optional[List[LangGraphTool]] = None,
     ) -> CompiledStateGraph[Any, Any, Any]:
         model = self.convert(
             llm_config,
@@ -970,26 +1058,30 @@ class AgentSpecToLangGraphConverter:
             checkpointer=checkpointer,
             config=config,
         )
-        langgraph_tools = [
-            self.convert(
-                t,
-                tool_registry=tool_registry,
-                converted_components=converted_components,
-                checkpointer=checkpointer,
-                config=config,
-            )
-            for t in tools
-        ] + [
-            t
-            for tb in toolboxes
-            for t in self.convert(
-                tb,
-                tool_registry=tool_registry,
-                converted_components=converted_components,
-                checkpointer=checkpointer,
-                config=config,
-            )
-        ]
+        langgraph_tools = (
+            (additional_langgraph_tools or [])
+            + [
+                self.convert(
+                    t,
+                    tool_registry=tool_registry,
+                    converted_components=converted_components,
+                    checkpointer=checkpointer,
+                    config=config,
+                )
+                for t in tools
+            ]
+            + [
+                t
+                for tb in toolboxes
+                for t in self.convert(
+                    tb,
+                    tool_registry=tool_registry,
+                    converted_components=converted_components,
+                    checkpointer=checkpointer,
+                    config=config,
+                )
+            ]
+        )
         output_model: Optional[type[BaseModel]] = None
         state_schema: Optional[Any] = None
 
@@ -1085,7 +1177,7 @@ class AgentSpecToLangGraphConverter:
                     span.end()
 
         # Monkey patch invocation functions to inject tracing
-        # No need to patch `(a)invoke` as the internally use `(a)stream`
+        # No need to patch `(a)invoke` as they internally use `(a)stream`
         compiled_graph.stream = patch_with_agent_execution_span  # type: ignore
         compiled_graph.astream = patch_async_with_agent_execution_span  # type: ignore
         return compiled_graph
@@ -1122,7 +1214,7 @@ class AgentSpecToLangGraphConverter:
 
         if generation_parameters is not None:
             generation_config["temperature"] = generation_parameters.temperature
-            generation_config["max_completion_tokens"] = generation_parameters.max_tokens
+            generation_config["max_tokens"] = generation_parameters.max_tokens
             generation_config["top_p"] = generation_parameters.top_p
 
         use_responses_api = False
@@ -1149,7 +1241,7 @@ class AgentSpecToLangGraphConverter:
 
             generation_config = {
                 "temperature": generation_config.get("temperature"),
-                "num_predict": generation_config.get("max_completion_tokens"),
+                "num_predict": generation_config.get("max_tokens"),
                 "top_p": generation_config.get("top_p"),
             }
             return ChatOllama(
@@ -1176,6 +1268,24 @@ class AgentSpecToLangGraphConverter:
                 use_responses_api=use_responses_api,
                 callbacks=callbacks,
                 **generation_config,
+            )
+        elif isinstance(llm_config, OciGenAiConfig):
+            from langchain_oci import ChatOCIGenAI  # type: ignore
+
+            if use_responses_api:
+                raise NotImplementedError(
+                    "OCI GenAI models with OpenAI Responses API is not yet supported"
+                )
+
+            model_kwargs = {**generation_config}
+            if "openai" in llm_config.model_id and "max_tokens" in model_kwargs:
+                model_kwargs["max_completion_tokens"] = model_kwargs.pop("max_tokens")
+
+            return ChatOCIGenAI(  # type: ignore
+                model_id=llm_config.model_id,
+                compartment_id=llm_config.compartment_id,
+                model_kwargs=model_kwargs,
+                **self._oci_client_config_to_langgraph(llm_config.client_config),
             )
         else:
             raise NotImplementedError(
@@ -1295,6 +1405,36 @@ class AgentSpecToLangGraphConverter:
         _add_session_tools_to_registry(tool_registry, tools, conn_prefix)
 
         return _get_session_tools_from_tool_registry(tool_registry, conn_prefix)
+
+    def _oci_client_config_to_langgraph(self, client_config: OciClientConfig) -> Dict[str, Any]:
+        if isinstance(client_config, OciClientConfigWithSecurityToken):
+            return dict(
+                auth_type=client_config.auth_type,
+                service_endpoint=client_config.service_endpoint,
+                auth_profile=client_config.auth_profile,
+                auth_file_location=client_config.auth_file_location,
+            )
+        elif isinstance(client_config, OciClientConfigWithInstancePrincipal):
+            return dict(
+                auth_type=client_config.auth_type,
+                service_endpoint=client_config.service_endpoint,
+            )
+        elif isinstance(client_config, OciClientConfigWithResourcePrincipal):
+            return dict(
+                auth_type=client_config.auth_type,
+                service_endpoint=client_config.service_endpoint,
+            )
+        elif isinstance(client_config, OciClientConfigWithApiKey):
+            return dict(
+                auth_type=client_config.auth_type,
+                service_endpoint=client_config.service_endpoint,
+                auth_profile=client_config.auth_profile,
+                auth_file_location=client_config.auth_file_location,
+            )
+        else:
+            raise ValueError(
+                f"Agent Spec OciClientConfig '{client_config.__class__.__name__}' is not supported yet."
+            )
 
 
 def _get_session_tools_from_tool_registry(
