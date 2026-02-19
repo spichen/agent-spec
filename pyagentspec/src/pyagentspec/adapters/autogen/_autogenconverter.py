@@ -209,8 +209,12 @@ class AgentSpecToAutogenConverter:
         elif isinstance(agentspec_llm, AgentSpecOpenAiCompatibleModel):
             return AutogenOpenAIChatCompletionClient(**_prepare_llm_args(agentspec_llm))
         else:
+            # Bare LlmConfig — dispatch on api_provider string
+            if agentspec_llm.api_provider == "openai":
+                return AutogenOpenAIChatCompletionClient(model=agentspec_llm.model_id)
             raise NotImplementedError(
-                f"The provided LlmConfig type `{type(agentspec_llm)}` is not supported in autogen yet."
+                f"LlmConfig with api_provider='{agentspec_llm.api_provider}' is not supported "
+                f"in autogen yet. Consider using a specific LlmConfig subclass instead."
             )
 
     def _client_tool_convert_to_autogen(
