@@ -29,8 +29,21 @@ Improvements
   Note that this PR might break existing downstream LangGraph tracing span processors if they run in ab async environment;
   span processors will need to implement the async APIs (e.g. async def on_event_async) to properly use the async tracing mode.
 
+* **OCI GenAI model support in LangGraph adapter**
+
+  The LangGraph adapter now supports loading/exporting OCI GenAI models.
+  Users can now use models such ss Grok and Meta models available on the OCI GenAI service.
+  Install with `pip install pyagentspec[langgraph-full]` to access this feature.
+
+
 New features
 ^^^^^^^^^^^^
+
+* **Swarm support in LangGraph adapter:**
+
+  The LangGraph adapter now supports the conversion of the Swarm multi-agent pattern.
+
+  To use this, install the optional extra ``pyagentspec[langgraph]``.
 
 * **CatchExceptionNode:**
 
@@ -39,6 +52,17 @@ New features
   and exposes an additional output string information ``caught_exception_info``.
 
   For more information and security considerations, read the :ref:`API Reference <catchexceptionnode>`.
+
+* **Introduced Open Agent Specification Evaluation:**
+
+  Open Agent Specification Evaluation (Agent Spec Eval) is an extension of
+  Agent Spec that standardizes how agentic systems are evaluated in a framework-agnostic way.
+
+  The Agent Spec Eval Python SDK is now available as part of ``pyagentspec``.
+  You can access its functionalities through the ``pyagentspec.evaluation`` subpackage.
+  It requires the ``evaluation`` extra dependency to be installed.
+
+  For more information read the :doc:`evaluation specification page <agentspec/evaluation>`.
 
 * **Added WayFlow adapter to pyagentspec:**
 
@@ -78,6 +102,12 @@ New features
   Introduced transforms in Agent Spec that allow applying transformations on conversations before being passed to the underlying LLM.
   We provide :ref:`MessageSummarizationTransform <messagesummarizationtransform>` and :ref:`ConversationSummarizationTransform <conversationsummarizationtransform>` for handling long contexts through summarization.
 
+* **ToolBox with User Confirmation**
+
+  ToolBoxes now have a new flag named `requires_confirmation`, which can be set to require user/operator approval before running any of the tools in the toolbox.
+  For more information read the :doc:`API Reference <api/tools>`.
+
+
 Breaking Changes
 ^^^^^^^^^^^^^^^^
 
@@ -93,6 +123,14 @@ Agent Spec 26.1.0
 
 New features
 ^^^^^^^^^^^^
+
+* **Added CrewAI adapter to pyagentspec:**
+
+  The CrewAI adapter is now available as part of ``pyagentspec``.
+  You can access its functionality through the ``pyagentspec.adapters.crewai`` subpackage.
+  It requires the ``crewai`` extra dependency to be installed.
+
+  For more information read the :doc:`API Reference <api/adapters>`.
 
 * **MCP tools support in LangGraph adapter:**
 

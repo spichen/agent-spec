@@ -1,4 +1,4 @@
-# Copyright © 2025 Oracle and/or its affiliates.
+# Copyright © 2025, 2026 Oracle and/or its affiliates.
 #
 # This software is under the Apache License 2.0
 # (LICENSE-APACHE or http://www.apache.org/licenses/LICENSE-2.0) or Universal Permissive License
@@ -103,6 +103,27 @@ def default_llm_config() -> VllmConfig:
     )
 
 
+@pytest.fixture
+def big_llm_config() -> VllmConfig:
+    llama_endpoint = os.environ.get("LLAMA70BV33_API_URL")
+    if not llama_endpoint:
+        if should_skip_llm_test():
+            pytest.skip(
+                "Skipping LLM-dependent test: LLAMA70BV33_API_URL is not set and SKIP_LLM_TESTS is enabled"
+            )
+        pytest.fail("LLAMA70BV33_API_URL is not set in the environment")
+    return VllmConfig(
+        name="Llama 3.3 70B instruct",
+        url=llama_endpoint,
+        model_id="/storage/models/Llama-3.3-70B-Instruct",
+    )
+
+
+@pytest.fixture(scope="session")
+def anyio_backend():
+    return "asyncio"
+
+
 class TestError(Exception):
     """TestError
 
@@ -154,19 +175,33 @@ def get_directory_allowlist_write(tmp_path: str, session_tmp_path: str) -> List[
 
 
 def get_directory_allowlist_read(tmp_path: str, session_tmp_path: str) -> List[Union[str, Path]]:
-    return get_directory_allowlist_write(tmp_path, session_tmp_path) + [
-        CONFIGS_DIR,
-        # Docs path
-        Path(os.path.dirname(__file__)).parent.parent / "docs" / "pyagentspec" / "source",
-        # Accessed by pandas, dependency of wayflowcore
-        Path("/usr/share/zoneinfo/UTC"),
-        # Used in docstring tests
-        Path(os.path.dirname(__file__)).parent / "src" / "pyagentspec",
-        Path("~/.pdbrc").expanduser(),
-        Path(os.path.dirname(__file__)).parent / ".pdbrc",
-        Path(os.path.dirname(__file__)) / ".pdbrc",
-        Path("/etc/os-release"),
-    ]
+    try:
+        # Crew AI sometimes attempts to read in some folders, we need to take that into account
+        from crewai.cli.shared.token_manager import TokenManager
+
+        crewai_read_dirs = [
+            TokenManager.get_secure_storage_path(),
+        ]
+    except ImportError:
+        crewai_read_dirs = []
+    return (
+        get_directory_allowlist_write(tmp_path, session_tmp_path)
+        + [
+            CONFIGS_DIR,
+            # Docs path
+            Path(os.path.dirname(__file__)).parent.parent / "docs" / "pyagentspec" / "source",
+            # Accessed by pandas, dependency of wayflowcore
+            Path("/usr/share/zoneinfo/UTC"),
+            # Used in docstring tests
+            Path(os.path.dirname(__file__)).parent / "src" / "pyagentspec",
+            Path("~/.pdbrc").expanduser(),
+            Path(os.path.dirname(__file__)).parent / ".pdbrc",
+            Path(os.path.dirname(__file__)) / ".pdbrc",
+            Path("/etc/os-release"),
+            Path("~/.oci/").expanduser(),
+        ]
+        + crewai_read_dirs
+    )
 
 
 def check_allowed_filewrite(

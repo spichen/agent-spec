@@ -298,6 +298,16 @@
         ]
     },
     {
+        "name": "Tracing",
+        "path": "tracing",
+        "classes": [
+            {"path": "pyagentspec.tracing.trace.Trace"},
+            {"path": "pyagentspec.tracing.spanprocessor.SpanProcessor"},
+            {"path": "pyagentspec.tracing.spans.span.Span", "name": "pyagentspec.tracing.spans.Span"},
+            {"path": "pyagentspec.tracing.events.event.Event", "name": "pyagentspec.tracing.events.Event"}
+        ]
+    },
+    {
         "name": "A2A",
         "path": "a2a",
         "classes": [
@@ -306,11 +316,20 @@
         ]
     },
     {
+        "name": "Version",
+        "path": "version",
+        "classes": [
+            {"path": "pyagentspec.versioning.AgentSpecVersionEnum"}
+        ]
+    },
+    {
         "name": "Adapters",
         "path": "adapters",
         "classes": [
             {"path": "pyagentspec.adapters.autogen.AgentSpecExporter"},
             {"path": "pyagentspec.adapters.autogen.AgentSpecLoader"},
+            {"path": "pyagentspec.adapters.crewai.AgentSpecExporter"},
+            {"path": "pyagentspec.adapters.crewai.AgentSpecLoader"},
             {"path": "pyagentspec.adapters.langgraph.AgentSpecExporter"},
             {"path": "pyagentspec.adapters.langgraph.AgentSpecLoader"},
             {"path": "pyagentspec.adapters.wayflow.AgentSpecExporter"},
@@ -320,10 +339,19 @@
         ]
     },
     {
-        "name": "Version",
-        "path": "version",
+        "name": "Evaluation",
+        "path": "evaluation",
         "classes": [
-            {"path": "pyagentspec.versioning.AgentSpecVersionEnum"}
+            {"path": "pyagentspec.evaluation.Dataset"},
+            {"path": "pyagentspec.evaluation.Evaluator"},
+            {"path": "pyagentspec.evaluation.EvaluationResults"},
+            {"path": "pyagentspec.evaluation.aggregators.Aggregator"},
+            {"path": "pyagentspec.evaluation.aggregators.HarmonicMeanAggregator"},
+            {"path": "pyagentspec.evaluation.aggregators.MeanAggregator"},
+            {"path": "pyagentspec.evaluation.intermediates.Intermediate"},
+            {"path": "pyagentspec.evaluation.metrics.Metric"},
+            {"path": "pyagentspec.evaluation.metrics.LlmBasedMetric"},
+            {"path": "pyagentspec.evaluation.metrics.LlmAsAJudgeMetric"}
         ]
     }
 ]

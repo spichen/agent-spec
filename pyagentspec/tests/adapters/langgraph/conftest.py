@@ -21,11 +21,6 @@ def pytest_collection_modifyitems(config: Any, items: Any):
     )
 
 
-@pytest.fixture(scope="session")
-def anyio_backend():
-    return "asyncio"
-
-
 def get_weather(city: str) -> str:
     """Returns the weather in a specific city.
     Args
@@ -81,4 +76,11 @@ def weather_agent_with_outputs_yaml(json_server: str) -> str:
 def ancestry_agent_with_client_tool_yaml(json_server: str) -> str:
     return _replace_config_placeholders(
         (CONFIGS / "ancestry_agent_with_client_tool.yaml").read_text(), json_server
+    )
+
+
+@pytest.fixture()
+def swarm_calculator_yaml(json_server: str) -> str:
+    return _replace_config_placeholders(
+        (CONFIGS / "swarm_calculator.yaml").read_text(), json_server
     )
