@@ -39,6 +39,12 @@ Improvements
 New features
 ^^^^^^^^^^^^
 
+* **Swarm support in LangGraph adapter:**
+
+  The LangGraph adapter now supports the conversion of the Swarm multi-agent pattern.
+
+  To use this, install the optional extra ``pyagentspec[langgraph]``.
+
 * **CatchExceptionNode:**
 
   Added a new node that executes a subflow and catches exceptions.
@@ -46,6 +52,17 @@ New features
   and exposes an additional output string information ``caught_exception_info``.
 
   For more information and security considerations, read the :ref:`API Reference <catchexceptionnode>`.
+
+* **Introduced Open Agent Specification Evaluation:**
+
+  Open Agent Specification Evaluation (Agent Spec Eval) is an extension of
+  Agent Spec that standardizes how agentic systems are evaluated in a framework-agnostic way.
+
+  The Agent Spec Eval Python SDK is now available as part of ``pyagentspec``.
+  You can access its functionalities through the ``pyagentspec.evaluation`` subpackage.
+  It requires the ``evaluation`` extra dependency to be installed.
+
+  For more information read the :doc:`evaluation specification page <agentspec/evaluation>`.
 
 * **Added WayFlow adapter to pyagentspec:**
 
@@ -84,6 +101,12 @@ New features
 
   Introduced transforms in Agent Spec that allow applying transformations on conversations before being passed to the underlying LLM.
   We provide :ref:`MessageSummarizationTransform <messagesummarizationtransform>` and :ref:`ConversationSummarizationTransform <conversationsummarizationtransform>` for handling long contexts through summarization.
+
+* **ToolBox with User Confirmation**
+
+  ToolBoxes now have a new flag named `requires_confirmation`, which can be set to require user/operator approval before running any of the tools in the toolbox.
+  For more information read the :doc:`API Reference <api/tools>`.
+
 
 Breaking Changes
 ^^^^^^^^^^^^^^^^

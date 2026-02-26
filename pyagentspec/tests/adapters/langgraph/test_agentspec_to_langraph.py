@@ -125,7 +125,12 @@ def test_client_tool_with_two_inputs(ancestry_agent_with_client_tool_yaml: str) 
         m for m in messages if m.type == "tool" and m.name == "AgentOutputModel"
     ]
     if structured_tool_msgs:
-        assert structured_tool_msgs[-1] is last_message
+        # Depending on LangGraph/LangChain versions and internal strategy selection,
+        # the final message may be either:
+        # - the structured output tool message ("AgentOutputModel"), or
+        # - the last tool message from the client tool resume ("get_child"), followed by
+        #   a separate structured_response value in the returned dict.
+        assert last_message in (structured_tool_msgs[-1], get_child_msgs[-1])
     else:
         assert last_message.type == "ai"
 
@@ -204,3 +209,39 @@ def test_execute_weather_agent_with_server_tool_with_openaicompatible_llm(
     assert last_message.type == "ai"
     tool_call_message = result["messages"][-2]
     assert isinstance(tool_call_message, ToolMessage)
+
+
+def test_execute_swarm(swarm_calculator_yaml: str) -> None:
+    from langchain_core.runnables import RunnableConfig
+
+    from pyagentspec.adapters.langgraph import AgentSpecLoader
+
+    tools_called = []
+
+    def add(a: int, b: int) -> int:
+        """Add two numbers"""
+        tools_called.append("add")
+        return a + b
+
+    def multiply(a: int, b: int) -> int:
+        """Multiply two numbers"""
+        tools_called.append("multiply")
+        return a * b
+
+    langgraph_swarm = AgentSpecLoader(tool_registry={"add": add, "multiply": multiply}).load_yaml(
+        swarm_calculator_yaml
+    )
+
+    config = RunnableConfig({"configurable": {"thread_id": "1"}})
+    messages = [{"role": "user", "content": "2+2"}]
+    response = langgraph_swarm.invoke(input={"messages": messages}, config=config)
+    last_message = response["messages"][-1]
+    assert "4" in last_message.content
+    assert "add" in tools_called
+
+    messages.append({"role": "assistant", "content": last_message.content})
+    messages.append({"role": "user", "content": "3*3"})
+    response = langgraph_swarm.invoke(input={"messages": messages}, config=config)
+    last_message = response["messages"][-1]
+    assert "9" in last_message.content
+    assert "multiply" in tools_called
