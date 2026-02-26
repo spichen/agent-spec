@@ -19,9 +19,10 @@ langchain-openai==1.1.7
 langchain-ollama==1.0.1
 langchain-oci==0.2.3
 langchain-mcp-adapters==0.2.1
+langgraph-swarm==0.1.0
 
 # WayFlow adapter
-wayflowcore==25.4.3
+wayflowcore==26.1.0
 
 # AgentFramework adapter
 agent-framework==1.0.0b260130
@@ -30,3 +31,10 @@ agent-framework-core==1.0.0b260130
 # OpenAI Agents adapter
 openai-agents==0.6.9
 libcst==1.8.5
+
+# Evaluation
+pandas==2.3.3
+oci==2.167.0
+litellm==1.81.13
+numpy==2.2.6; python_version<"3.14"
+numpy==2.4.2; python_version>="3.14"
