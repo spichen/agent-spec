@@ -125,7 +125,12 @@ def test_client_tool_with_two_inputs(ancestry_agent_with_client_tool_yaml: str) 
         m for m in messages if m.type == "tool" and m.name == "AgentOutputModel"
     ]
     if structured_tool_msgs:
-        assert structured_tool_msgs[-1] is last_message
+        # Depending on LangGraph/LangChain versions and internal strategy selection,
+        # the final message may be either:
+        # - the structured output tool message ("AgentOutputModel"), or
+        # - the last tool message from the client tool resume ("get_child"), followed by
+        #   a separate structured_response value in the returned dict.
+        assert last_message in (structured_tool_msgs[-1], get_child_msgs[-1])
     else:
         assert last_message.type == "ai"
 
@@ -240,3 +245,66 @@ def test_execute_swarm(swarm_calculator_yaml: str) -> None:
     last_message = response["messages"][-1]
     assert "9" in last_message.content
     assert "multiply" in tools_called
+
+
+def test_openaiconfig_passes_api_key_to_langchain(monkeypatch: pytest.MonkeyPatch) -> None:
+    import openai
+
+    from pyagentspec.adapters.langgraph._langgraphconverter import AgentSpecToLangGraphConverter
+    from pyagentspec.llms.openaiconfig import OpenAiConfig
+
+    # Ensure the api_key comes from the config, not the environment.
+    monkeypatch.delenv("OPENAI_API_KEY", raising=False)
+
+    agentspec_llm = OpenAiConfig(name="openai", model_id="gpt-4o-mini", api_key="MOCKED_KEY")
+
+    try:
+        model = AgentSpecToLangGraphConverter().convert(agentspec_llm, {})
+    except openai.OpenAIError as exc:
+        pytest.fail(f"Expected api_key to be passed to LangChain ChatOpenAI, got: {exc}")
+
+    assert model.openai_api_key.get_secret_value() == "MOCKED_KEY"
+
+
+def test_openaicompatibleconfig_passes_api_key_to_langchain(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import openai
+
+    from pyagentspec.adapters.langgraph._langgraphconverter import AgentSpecToLangGraphConverter
+    from pyagentspec.llms.openaicompatibleconfig import OpenAiCompatibleConfig
+
+    # Ensure the api_key comes from the config, not the environment.
+    monkeypatch.delenv("OPENAI_API_KEY", raising=False)
+
+    agentspec_llm = OpenAiCompatibleConfig(
+        name="compatible",
+        model_id="gpt-4o-mini",
+        url="https://api.compatible",
+        api_key="MOCKED_KEY",
+    )
+
+    try:
+        model = AgentSpecToLangGraphConverter().convert(agentspec_llm, {})
+    except openai.OpenAIError as exc:
+        pytest.fail(f"Expected api_key to be passed to LangChain ChatOpenAI, got: {exc}")
+
+    assert model.openai_api_key.get_secret_value() == "MOCKED_KEY"
+
+
+def test_vllmconfig_passes_api_key_to_langchain(monkeypatch: pytest.MonkeyPatch) -> None:
+    from pyagentspec.adapters.langgraph._langgraphconverter import AgentSpecToLangGraphConverter
+    from pyagentspec.llms.vllmconfig import VllmConfig
+
+    # Ensure the api_key comes from the config, not the environment.
+    monkeypatch.delenv("OPENAI_API_KEY", raising=False)
+
+    agentspec_llm = VllmConfig(
+        name="vllm",
+        model_id="meta-llama/Meta-Llama-3.1-8B-Instruct",
+        url="localhost:8000",
+        api_key="MOCKED_KEY",
+    )
+
+    model = AgentSpecToLangGraphConverter().convert(agentspec_llm, {})
+    assert model.openai_api_key.get_secret_value() == "MOCKED_KEY"
