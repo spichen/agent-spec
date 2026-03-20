@@ -181,34 +181,20 @@ def test_frozen_fields_not_serialized_on_subclasses() -> None:
     assert "api_provider:" not in serialized_ollama
 
 
-def test_version_inference_with_new_fields() -> None:
-    # Without new fields: default version
-    config_no_new_fields = LlmConfig(
+def test_version_inference_bare_llmconfig_always_requires_v26_2_0() -> None:
+    # Bare LlmConfig is a v26_2_0 feature (it was abstract before),
+    # regardless of which fields are set
+    config_minimal = LlmConfig(
         name="basic",
         model_id="some-model",
     )
-    assert config_no_new_fields.min_agentspec_version < AgentSpecVersionEnum.v26_2_0
+    assert config_minimal.min_agentspec_version == AgentSpecVersionEnum.v26_2_0
 
-    # With provider set: should require v26_2_0
-    config_with_provider = LlmConfig(
+    config_with_fields = LlmConfig(
         name="with_provider",
         model_id="some-model",
         provider="openai",
-    )
-    assert config_with_provider.min_agentspec_version == AgentSpecVersionEnum.v26_2_0
-
-    # With api_provider set: should require v26_2_0
-    config_with_api_provider = LlmConfig(
-        name="with_api_provider",
-        model_id="some-model",
         api_provider="openai",
-    )
-    assert config_with_api_provider.min_agentspec_version == AgentSpecVersionEnum.v26_2_0
-
-    # With api_type set: should require v26_2_0
-    config_with_api_type = LlmConfig(
-        name="with_api_type",
-        model_id="some-model",
         api_type="chat_completions",
     )
-    assert config_with_api_type.min_agentspec_version == AgentSpecVersionEnum.v26_2_0
+    assert config_with_fields.min_agentspec_version == AgentSpecVersionEnum.v26_2_0

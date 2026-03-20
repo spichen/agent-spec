@@ -6,7 +6,7 @@
 
 """This module defines the base class for all LLM configuration component."""
 
-from typing import Any, Optional
+from typing import Optional
 
 from pyagentspec.component import Component
 from pyagentspec.llms.llmgenerationconfig import LlmGenerationConfig
@@ -37,29 +37,10 @@ class LlmConfig(Component):
     default_generation_parameters: Optional[LlmGenerationConfig] = None
     """Parameters used for the generation call of this LLM"""
 
-    def _versioned_model_fields_to_exclude(
-        self, agentspec_version: AgentSpecVersionEnum
-    ) -> set[str]:
-        fields_to_exclude = set()
-        # Only exclude the generic fields for bare LlmConfig instances.
-        # Subclasses may shadow these fields (e.g. OciGenAiConfig has its own
-        # provider field that pre-dates v26_2_0) and manage their own exclusion rules.
-        if type(self) is LlmConfig and agentspec_version < AgentSpecVersionEnum.v26_2_0:
-            fields_to_exclude.add("provider")
-            fields_to_exclude.add("api_provider")
-            fields_to_exclude.add("api_type")
-        return fields_to_exclude
-
     def _infer_min_agentspec_version_from_configuration(self) -> AgentSpecVersionEnum:
         parent_min_version = super()._infer_min_agentspec_version_from_configuration()
-        current_object_min_version = self.min_agentspec_version
-        # Only bump version for bare LlmConfig instances — subclasses set these fields
-        # as class-level defaults (implied by component_type) and handle versioning themselves.
+        # Bare LlmConfig is a v26_2_0 feature — it was abstract before.
+        # Subclasses handle their own versioning independently.
         if type(self) is LlmConfig:
-            if (
-                self.provider is not None
-                or self.api_provider is not None
-                or self.api_type is not None
-            ):
-                current_object_min_version = AgentSpecVersionEnum.v26_2_0
-        return max(current_object_min_version, parent_min_version)
+            return max(AgentSpecVersionEnum.v26_2_0, parent_min_version)
+        return parent_min_version
