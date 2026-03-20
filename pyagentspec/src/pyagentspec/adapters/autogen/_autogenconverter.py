@@ -208,6 +208,13 @@ class AgentSpecToAutogenConverter:
             return AutogenOllamaChatCompletionClient(**llm_args)
         elif isinstance(agentspec_llm, AgentSpecOpenAiCompatibleModel):
             return AutogenOpenAIChatCompletionClient(**_prepare_llm_args(agentspec_llm))
+        elif isinstance(agentspec_llm, AgentSpecLlmConfig):
+            if agentspec_llm.api_provider == "openai":
+                return AutogenOpenAIChatCompletionClient(model=agentspec_llm.model_id)
+            raise NotImplementedError(
+                f"Bare LlmConfig with api_provider='{agentspec_llm.api_provider}' is not supported "
+                f"in autogen yet. Consider using a specific LlmConfig subclass instead."
+            )
         else:
             raise NotImplementedError(
                 f"The provided LlmConfig type `{type(agentspec_llm)}` is not supported in autogen yet."

@@ -257,6 +257,15 @@ class AgentSpecToAgentFrameworkConverter:
             return OpenAIChatClient(
                 model_id=llm_config.model_id,
             )
+        elif isinstance(llm_config, AgentSpecLlmConfig):
+            if llm_config.api_provider == "openai":
+                return OpenAIChatClient(
+                    model_id=llm_config.model_id,
+                )
+            raise NotImplementedError(
+                f"Bare LlmConfig with api_provider='{llm_config.api_provider}' is not yet supported "
+                f"in agent_framework. Consider using a specific LlmConfig subclass instead."
+            )
         else:
             raise NotImplementedError(
                 f"Llm model of type {llm_config.__class__.__name__} is not yet supported."

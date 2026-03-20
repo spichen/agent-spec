@@ -7,6 +7,7 @@
 import pytest
 
 from pyagentspec.llms import (
+    LlmConfig,
     OllamaConfig,
     OpenAiCompatibleConfig,
     OpenAiConfig,
@@ -14,6 +15,7 @@ from pyagentspec.llms import (
 )
 from pyagentspec.llms.llmgenerationconfig import LlmGenerationConfig
 from pyagentspec.serialization import AgentSpecDeserializer, AgentSpecSerializer
+from pyagentspec.versioning import AgentSpecVersionEnum
 
 from .conftest import assert_serialized_representations_are_equal
 
@@ -76,9 +78,16 @@ def test_can_serialize_and_deserialize_llm_config_with_arbitrary_generation_conf
             api_key="api_key",
             default_generation_parameters=LlmGenerationConfig(),
         ),
+        LlmConfig(
+            id="generic",
+            name="agi5",
+            model_id="gpt-4o",
+            provider="openai",
+            api_provider="openai",
+        ),
     ],
 )
-def test_can_serialize_and_deserialize_llm_config(llm_config: VllmConfig) -> None:
+def test_can_serialize_and_deserialize_llm_config(llm_config: LlmConfig) -> None:
     serializer = AgentSpecSerializer()
     serialized_llm = serializer.to_yaml(llm_config)
     assert f"component_type: {type(llm_config).__name__}"
@@ -89,3 +98,117 @@ def test_can_serialize_and_deserialize_llm_config(llm_config: VllmConfig) -> Non
         components_registry={"openai.api_key": "api_key", "openai_compatible.api_key": "api_key"},
     )
     assert llm_config == deserialized_llm
+
+
+def test_bare_llmconfig_instantiation_all_fields() -> None:
+    config = LlmConfig(
+        id="test",
+        name="test_llm",
+        model_id="gpt-4o",
+        provider="openai",
+        api_provider="openai",
+        api_type="chat_completions",
+    )
+    assert config.model_id == "gpt-4o"
+    assert config.provider == "openai"
+    assert config.api_provider == "openai"
+    assert config.api_type == "chat_completions"
+    assert config.component_type == "LlmConfig"
+
+
+def test_bare_llmconfig_instantiation_minimal() -> None:
+    config = LlmConfig(
+        name="minimal",
+        model_id="some-model",
+    )
+    assert config.model_id == "some-model"
+    assert config.provider is None
+    assert config.api_provider is None
+    assert config.api_type is None
+
+
+def test_bare_llmconfig_serialization_roundtrip() -> None:
+    config = LlmConfig(
+        id="generic_llm",
+        name="generic",
+        model_id="gpt-4o",
+        provider="openai",
+        api_provider="openai",
+        api_type="chat_completions",
+    )
+    serializer = AgentSpecSerializer()
+    serialized = serializer.to_yaml(config)
+    assert "component_type: LlmConfig" in serialized
+    assert "model_id: gpt-4o" in serialized
+    assert "provider: openai" in serialized
+    assert "api_provider: openai" in serialized
+    assert "api_type: chat_completions" in serialized
+
+    deserialized = AgentSpecDeserializer().from_yaml(serialized)
+    assert config == deserialized
+
+
+def test_frozen_fields_not_serialized_on_subclasses() -> None:
+    openai_config = OpenAiConfig(
+        id="openai",
+        name="openai_llm",
+        model_id="gpt-4o",
+    )
+    serializer = AgentSpecSerializer()
+    serialized = serializer.to_yaml(openai_config)
+    # provider and api_provider are frozen on OpenAiConfig, should not be serialized
+    assert "provider:" not in serialized
+    assert "api_provider:" not in serialized
+
+    vllm_config = VllmConfig(
+        id="vllm",
+        name="vllm_llm",
+        model_id="some-model",
+        url="http://localhost:8000",
+    )
+    serialized_vllm = serializer.to_yaml(vllm_config)
+    # api_provider is frozen on VllmConfig
+    assert "api_provider:" not in serialized_vllm
+
+    ollama_config = OllamaConfig(
+        id="ollama",
+        name="ollama_llm",
+        model_id="llama3",
+        url="http://localhost:11434",
+    )
+    serialized_ollama = serializer.to_yaml(ollama_config)
+    # api_provider is frozen on OllamaConfig
+    assert "api_provider:" not in serialized_ollama
+
+
+def test_version_inference_with_new_fields() -> None:
+    # Without new fields: default version
+    config_no_new_fields = LlmConfig(
+        name="basic",
+        model_id="some-model",
+    )
+    assert config_no_new_fields.min_agentspec_version < AgentSpecVersionEnum.v26_2_0
+
+    # With provider set: should require v26_2_0
+    config_with_provider = LlmConfig(
+        name="with_provider",
+        model_id="some-model",
+        provider="openai",
+    )
+    assert config_with_provider.min_agentspec_version == AgentSpecVersionEnum.v26_2_0
+
+    # With api_provider set: should require v26_2_0
+    config_with_api_provider = LlmConfig(
+        name="with_api_provider",
+        model_id="some-model",
+        api_provider="openai",
+    )
+    assert config_with_api_provider.min_agentspec_version == AgentSpecVersionEnum.v26_2_0
+
+    # With api_type set: should require v26_2_0
+    config_with_api_type = LlmConfig(
+        name="with_api_type",
+        model_id="some-model",
+        api_type="chat_completions",
+    )
+    assert config_with_api_type.min_agentspec_version == AgentSpecVersionEnum.v26_2_0
