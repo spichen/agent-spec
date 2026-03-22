@@ -20,7 +20,6 @@ llm_config:
   description: null
   metadata: {}
   model_id: agi_model1
-  provider: null
   default_generation_parameters: null
   url: http://some.where
   api_type: chat_completions

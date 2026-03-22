@@ -47,9 +47,8 @@ class OpenAiCompatibleConfig(LlmConfig):
         self, agentspec_version: AgentSpecVersionEnum
     ) -> set[str]:
         fields_to_exclude = super()._versioned_model_fields_to_exclude(agentspec_version)
-        if agentspec_version < AgentSpecVersionEnum.v26_2_0:
-            # provider is inherited from LlmConfig base and was not part of this class before v26_2_0
-            fields_to_exclude.add("provider")
+        # provider is inherited from LlmConfig base but not meaningful for this class
+        fields_to_exclude.add("provider")
         if agentspec_version < AgentSpecVersionEnum.v25_4_2:
             fields_to_exclude.add("api_type")
             fields_to_exclude.add("api_key")

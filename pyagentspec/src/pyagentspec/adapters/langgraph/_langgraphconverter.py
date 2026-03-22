@@ -1288,7 +1288,8 @@ class AgentSpecToLangGraphConverter:
                 model_kwargs=model_kwargs,
                 **self._oci_client_config_to_langgraph(llm_config.client_config),
             )
-        elif isinstance(llm_config, AgentSpecLlmConfig):
+        else:
+            # Bare LlmConfig — dispatch on api_provider string
             if llm_config.api_provider == "openai":
                 return _create_chat_openai_model(
                     model_id=llm_config.model_id,
@@ -1297,12 +1298,8 @@ class AgentSpecToLangGraphConverter:
                     generation_config=generation_config,
                 )
             raise NotImplementedError(
-                f"Bare LlmConfig with api_provider='{llm_config.api_provider}' is not yet supported "
+                f"LlmConfig with api_provider='{llm_config.api_provider}' is not yet supported "
                 f"in langgraph. Consider using a specific LlmConfig subclass instead."
-            )
-        else:
-            raise NotImplementedError(
-                f"Llm model of type {llm_config.__class__.__name__} is not yet supported."
             )
 
     def _client_transport_convert_to_langgraph(
