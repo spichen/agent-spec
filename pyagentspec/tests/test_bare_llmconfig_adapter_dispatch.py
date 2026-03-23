@@ -20,6 +20,17 @@ def bare_llmconfig_openai() -> LlmConfig:
 
 
 @pytest.fixture
+def bare_llmconfig_openai_with_base_url() -> LlmConfig:
+    return LlmConfig(
+        name="test",
+        model_id="gpt-4o",
+        api_provider="openai",
+        base_url="https://my-proxy.example.com/v1",
+        api_key="sk-test-key",
+    )
+
+
+@pytest.fixture
 def bare_llmconfig_openai_responses() -> LlmConfig:
     return LlmConfig(name="test", model_id="gpt-4o", api_provider="openai", api_type="responses")
 
@@ -41,6 +52,18 @@ class TestOpenAiAgentsDispatch:
         converter = OpenAiAgentsConverter()
         result = converter._llm_convert_to_openai(bare_llmconfig_openai)
         assert result == "gpt-4o"
+
+    def test_openai_provider_with_base_url_returns_model(
+        self, bare_llmconfig_openai_with_base_url: LlmConfig
+    ) -> None:
+        from agents.models.chatcmpl_model import ChatCmplModel
+
+        from pyagentspec.adapters.openaiagents._openaiagentsconverter import OpenAiAgentsConverter
+
+        converter = OpenAiAgentsConverter()
+        result = converter._llm_convert_to_openai(bare_llmconfig_openai_with_base_url)
+        # When base_url is set, should return a ChatCmplModel (OAChatCompletionsModel) not a string
+        assert isinstance(result, ChatCmplModel)
 
     def test_unsupported_provider_raises(self, bare_llmconfig_unsupported: LlmConfig) -> None:
         from pyagentspec.adapters.openaiagents._openaiagentsconverter import OpenAiAgentsConverter
@@ -73,6 +96,16 @@ class TestLangGraphDispatch:
         converter = AgentSpecToLangGraphConverter()
         result = converter._llm_convert_to_langgraph(bare_llmconfig_openai)
         assert result.use_responses_api is False
+
+    def test_openai_provider_with_base_url_and_api_key(
+        self, bare_llmconfig_openai_with_base_url: LlmConfig
+    ) -> None:
+        from pyagentspec.adapters.langgraph._langgraphconverter import AgentSpecToLangGraphConverter
+
+        converter = AgentSpecToLangGraphConverter()
+        result = converter._llm_convert_to_langgraph(bare_llmconfig_openai_with_base_url)
+        assert result.openai_api_base == "https://my-proxy.example.com/v1"
+        assert result.openai_api_key.get_secret_value() == "sk-test-key"
 
     def test_unsupported_provider_raises(self, bare_llmconfig_unsupported: LlmConfig) -> None:
         from pyagentspec.adapters.langgraph._langgraphconverter import AgentSpecToLangGraphConverter

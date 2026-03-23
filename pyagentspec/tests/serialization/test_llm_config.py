@@ -108,11 +108,15 @@ def test_bare_llmconfig_instantiation_all_fields() -> None:
         provider="openai",
         api_provider="openai",
         api_type="chat_completions",
+        base_url="https://api.openai.com/v1",
+        api_key="sk-test-key",
     )
     assert config.model_id == "gpt-4o"
     assert config.provider == "openai"
     assert config.api_provider == "openai"
     assert config.api_type == "chat_completions"
+    assert config.base_url == "https://api.openai.com/v1"
+    assert config.api_key == "sk-test-key"
     assert config.component_type == "LlmConfig"
 
 
@@ -125,6 +129,8 @@ def test_bare_llmconfig_instantiation_minimal() -> None:
     assert config.provider is None
     assert config.api_provider is None
     assert config.api_type is None
+    assert config.base_url is None
+    assert config.api_key is None
 
 
 def test_bare_llmconfig_serialization_roundtrip() -> None:
@@ -148,6 +154,29 @@ def test_bare_llmconfig_serialization_roundtrip() -> None:
     assert config == deserialized
 
 
+def test_bare_llmconfig_serialization_with_base_url_and_api_key() -> None:
+    config = LlmConfig(
+        id="custom_endpoint",
+        name="custom",
+        model_id="gpt-4o",
+        api_provider="openai",
+        base_url="https://my-proxy.example.com/v1",
+        api_key="sk-test-key",
+    )
+    serializer = AgentSpecSerializer()
+    serialized = serializer.to_yaml(config)
+    assert "base_url: https://my-proxy.example.com/v1" in serialized
+    # api_key is a SensitiveField, should be replaced by a reference
+    assert "api_key:" in serialized
+    assert "sk-test-key" not in serialized
+
+    deserialized = AgentSpecDeserializer().from_yaml(
+        serialized,
+        components_registry={"custom_endpoint.api_key": "sk-test-key"},
+    )
+    assert config == deserialized
+
+
 def test_frozen_fields_not_serialized_on_subclasses() -> None:
     openai_config = OpenAiConfig(
         id="openai",
@@ -159,6 +188,8 @@ def test_frozen_fields_not_serialized_on_subclasses() -> None:
     # provider and api_provider are frozen on OpenAiConfig, should not be serialized
     assert "provider:" not in serialized
     assert "api_provider:" not in serialized
+    # base_url is excluded from subclasses (they have their own URL fields)
+    assert "base_url:" not in serialized
 
     vllm_config = VllmConfig(
         id="vllm",
@@ -170,6 +201,7 @@ def test_frozen_fields_not_serialized_on_subclasses() -> None:
     # api_provider is frozen on VllmConfig, provider is not meaningful
     assert "api_provider:" not in serialized_vllm
     assert "provider:" not in serialized_vllm
+    assert "base_url:" not in serialized_vllm
 
     ollama_config = OllamaConfig(
         id="ollama",
@@ -181,6 +213,7 @@ def test_frozen_fields_not_serialized_on_subclasses() -> None:
     # api_provider is frozen on OllamaConfig, provider is not meaningful
     assert "api_provider:" not in serialized_ollama
     assert "provider:" not in serialized_ollama
+    assert "base_url:" not in serialized_ollama
 
 
 def test_version_inference_bare_llmconfig_always_requires_v26_2_0() -> None:

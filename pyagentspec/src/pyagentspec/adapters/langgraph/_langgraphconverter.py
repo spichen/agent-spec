@@ -1293,6 +1293,8 @@ class AgentSpecToLangGraphConverter:
             if llm_config.api_provider == "openai":
                 return _create_chat_openai_model(
                     model_id=llm_config.model_id,
+                    base_url=llm_config.base_url,
+                    api_key=llm_config.api_key,
                     use_responses_api=llm_config.api_type == "responses",
                     callbacks=callbacks,
                     generation_config=generation_config,

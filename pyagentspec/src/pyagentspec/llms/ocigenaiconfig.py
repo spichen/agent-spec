@@ -75,6 +75,8 @@ class OciGenAiConfig(LlmConfig):
         fields_to_exclude = super()._versioned_model_fields_to_exclude(agentspec_version)
         # api_provider is frozen/implied by component_type
         fields_to_exclude.add("api_provider")
+        # OciGenAiConfig uses OCI client_config for auth, not api_key
+        fields_to_exclude.add("api_key")
         if agentspec_version < AgentSpecVersionEnum.v25_4_2:
             fields_to_exclude.add("api_type")
             fields_to_exclude.add("conversation_store_id")

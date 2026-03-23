@@ -211,7 +211,12 @@ class AgentSpecToAutogenConverter:
         else:
             # Bare LlmConfig — dispatch on api_provider string
             if agentspec_llm.api_provider == "openai":
-                return AutogenOpenAIChatCompletionClient(model=agentspec_llm.model_id)
+                kwargs: Dict[str, Any] = {"model": agentspec_llm.model_id}
+                if agentspec_llm.base_url is not None:
+                    kwargs["base_url"] = agentspec_llm.base_url
+                if agentspec_llm.api_key is not None:
+                    kwargs["api_key"] = agentspec_llm.api_key
+                return AutogenOpenAIChatCompletionClient(**kwargs)
             raise NotImplementedError(
                 f"LlmConfig with api_provider='{agentspec_llm.api_provider}' is not supported "
                 f"in autogen yet. Consider using a specific LlmConfig subclass instead."
