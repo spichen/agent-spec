@@ -2,9 +2,11 @@
 How to Use LLMs from Different LLM Providers
 ============================================
 
-Agent Spec supports several LLM providers, each one having its own LlmConfig component.
-The available LLMs are:
+Agent Spec supports several LLM providers. ``LlmConfig`` can be used directly with the ``api_provider``
+field to describe any provider, or you can use a dedicated subclass for provider-specific configuration.
+The available LLM configurations are:
 
+- :ref:`LlmConfig <llmconfig>` (generic, provider-agnostic)
 - :ref:`OpenAiConfig <openaiconfig>`
 - :ref:`OciGenAiConfig <ocigenaiconfig>`
 - :ref:`OpenAiCompatibleConfig <openaicompatibleconfig>`
@@ -13,6 +15,43 @@ The available LLMs are:
 
 Their configuration is specified directly in their respective class constructor.
 This guide will show you how to configure LLMs from different LLM providers with examples and notes on usage.
+
+
+LlmConfig (Generic)
+====================
+
+``LlmConfig`` can be used directly to describe any LLM without requiring a provider-specific subclass.
+This is useful when you want to describe an LLM from a provider that does not have a dedicated configuration class,
+or when you want a simple, portable configuration.
+
+**Parameters**
+
+.. option:: model_id: str
+
+  Name of the model to use.
+
+.. option:: provider: str, null
+
+  The model provider, i.e. who made the model (e.g. ``"openai"``, ``"meta"``, ``"anthropic"``, ``"cohere"``).
+
+.. option:: api_provider: str, null
+
+  The API provider, i.e. who serves the API (e.g. ``"openai"``, ``"oci"``, ``"vllm"``, ``"ollama"``, ``"aws_bedrock"``, ``"vertex_ai"``).
+
+.. option:: api_type: str, null
+
+  The wire protocol to use (e.g. ``"chat_completions"``, ``"responses"``).
+
+.. option:: default_generation_parameters: dict, null
+
+  Default parameters for text generation with this model.
+
+**Examples**
+
+.. literalinclude:: ../code_examples/howto_llm_from_different_providers.py
+    :language: python
+    :start-after: .. llmconfig-start
+    :end-before: .. llmconfig-end
 
 
 OciGenAiConfig

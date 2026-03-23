@@ -530,14 +530,22 @@ In order to make them usable, we need to let users specify all the
 details needed to configure the LLM, like the connection details, the
 generation parameters, etc.
 
-We define a new Component called LlmConfig that contains all the details:
+We define a Component called LlmConfig that contains all the details:
 
 .. code-block:: python
 
    class LlmConfig(Component):
+     model_id: str
+     provider: Optional[str]
+     api_provider: Optional[str]
+     api_type: Optional[str]
      default_generation_parameters: Optional[Dict[str, Any]]
 
-We require only to specify the default generation parameters that should be used by default when prompting the LLM.
+The ``model_id`` field is required and identifies the model to use.
+The ``provider`` field is optional and identifies the model provider (e.g. ``"openai"``, ``"meta"``, ``"anthropic"``, ``"cohere"``).
+The ``api_provider`` field is optional and identifies the API provider serving the model (e.g. ``"openai"``, ``"oci"``, ``"vllm"``, ``"ollama"``, ``"aws_bedrock"``, ``"vertex_ai"``).
+The ``api_type`` field is optional and identifies the wire protocol to use (e.g. ``"chat_completions"``, ``"responses"``).
+The ``default_generation_parameters`` field specifies the default generation parameters that should be used when prompting the LLM.
 These parameters are specified as a dictionary of parameter names and respective values.
 The names are strings, while values can be of any type compatible with the JSON schema standard.
 
@@ -548,7 +556,10 @@ The names are strings, while values can be of any type compatible with the JSON 
     or explicitly before importing the configuration into the runtime.
 
 Null value is equivalent to an empty dictionary, i.e., no default generation parameter is specified.
-Specific extensions of LlmConfig for the most common models are provided as well.
+
+``LlmConfig`` can be used directly for any LLM provider by setting the appropriate ``provider``, ``api_provider``,
+and ``api_type`` values. Specific extensions of ``LlmConfig`` for the most common providers are also provided
+for convenience, offering additional provider-specific configuration options.
 
 Structured Generation
 ^^^^^^^^^^^^^^^^^^^^^

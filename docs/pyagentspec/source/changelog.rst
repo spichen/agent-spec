@@ -43,6 +43,14 @@ Improvements
 New features
 ^^^^^^^^^^^^
 
+* **Generic LlmConfig with provider-agnostic fields**
+
+  ``LlmConfig`` is now a concrete class that can be used directly without requiring a dedicated
+  subclass for each LLM provider. New fields ``model_id``, ``provider``, ``api_provider``, and
+  ``api_type`` allow describing any LLM connection generically. Existing subclasses (``OpenAiConfig``,
+  ``OciGenAiConfig``, etc.) continue to work unchanged. All framework adapters support bare ``LlmConfig``
+  instances through string-based dispatch on ``api_provider``.
+
 * **New tool output streaming Event:**
 
   A new :ref:`ToolExecutionStreamingChunkReceived <toolexecutionstreamingchunkreceived>`
