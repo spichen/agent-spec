@@ -467,6 +467,10 @@ class Component(AbstractableModel, abstract=True):
             all_subclasses = cls._get_all_subclasses(only_core_components=only_core_components)
             adapter = TypeAdapter(Union[all_subclasses])  # type: ignore
             json_schema = adapter.json_schema(by_alias=by_alias, mode=mode)
+        elif getattr(cls, "_include_subclasses_in_schema", False):
+            all_subclasses = cls._get_all_subclasses(only_core_components=only_core_components)
+            adapter = TypeAdapter(Union[tuple([cls, *all_subclasses])])  # type: ignore
+            json_schema = adapter.json_schema(by_alias=by_alias, mode=mode)
         else:
             json_schema = super().model_json_schema(by_alias=by_alias, mode=mode, **kwargs)
         json_schema_with_all_types = replace_abstract_models_and_hierarchical_definitions(
@@ -681,26 +685,25 @@ def replace_abstract_models_and_hierarchical_definitions(
                 only_core_components=only_core_components
             )
             if len(all_subclasses) > 0:
-                # If the component opts in via _include_subclasses_in_schema,
-                # ensure subclass schemas exist in $defs (they may be missing
-                # when a formerly-abstract class becomes concrete).
-                if getattr(component_type, "_include_subclasses_in_schema", False):
-                    missing_subclasses = [
-                        sc for sc in all_subclasses if sc.__name__ not in json_schema["$defs"]
-                    ]
-                    if missing_subclasses:
-                        subclass_schema = TypeAdapter(
-                            Union[tuple(missing_subclasses)]  # type: ignore
-                        ).json_schema(mode=mode, by_alias=by_alias)
-                        if "$defs" in subclass_schema:
-                            new_defs = subclass_schema.pop("$defs")
-                            json_schema["$defs"].update(
-                                {
-                                    k: v
-                                    for k, v in new_defs.items()
-                                    if k not in json_schema["$defs"]
-                                }
-                            )
+                # Ensure subclass schemas exist in $defs before creating $ref
+                # pointers. They may be missing when a concrete class also
+                # serves as a base (e.g. LlmConfig after becoming concrete).
+                missing_subclasses = [
+                    sc for sc in all_subclasses if sc.__name__ not in json_schema["$defs"]
+                ]
+                if missing_subclasses:
+                    subclass_schema = TypeAdapter(
+                        Union[tuple(missing_subclasses)]  # type: ignore
+                    ).json_schema(mode=mode, by_alias=by_alias)
+                    if "$defs" in subclass_schema:
+                        new_defs = subclass_schema.pop("$defs")
+                        json_schema["$defs"].update(
+                            {
+                                k: v
+                                for k, v in new_defs.items()
+                                if k not in json_schema["$defs"]
+                            }
+                        )
 
                 concrete_type_json_schema = json_schema["$defs"][component_type_name]
                 json_schema["$defs"][component_type_name] = {
