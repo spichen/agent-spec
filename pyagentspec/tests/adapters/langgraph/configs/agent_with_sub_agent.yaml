@@ -1,0 +1,70 @@
+component_type: Agent
+id: a1b2c3d4-0001-0001-0001-000000000001
+name: parent_agent
+description: A parent agent that delegates to a sub-agent
+metadata:
+  __metadata_info__: {}
+inputs: []
+outputs: []
+llm_config:
+  component_type: OpenAiCompatibleConfig
+  id: a1b2c3d4-0001-0001-0001-000000000010
+  name: test-llm
+  description: null
+  metadata:
+    __metadata_info__: {}
+  default_generation_parameters: null
+  url: '[[LLAMA70BV33_API_URL]]'
+  model_id: /storage/models/Llama-3.3-70B-Instruct
+  api_type: chat_completions
+  api_key: null
+system_prompt: You are a parent agent. For math questions, delegate to the calculator sub-agent.
+tools: []
+toolboxes: []
+human_in_the_loop: true
+transforms: []
+sub_agents:
+- component_type: Agent
+  id: a1b2c3d4-0001-0001-0001-000000000002
+  name: calculator_agent
+  description: A sub-agent that performs arithmetic calculations
+  metadata:
+    __metadata_info__: {}
+  inputs:
+  - title: expression
+    type: string
+  outputs: []
+  llm_config:
+    component_type: OpenAiCompatibleConfig
+    id: a1b2c3d4-0001-0001-0001-000000000010
+    name: test-llm
+    description: null
+    metadata:
+      __metadata_info__: {}
+    default_generation_parameters: null
+    url: '[[LLAMA70BV33_API_URL]]'
+    model_id: /storage/models/Llama-3.3-70B-Instruct
+    api_type: chat_completions
+    api_key: null
+  system_prompt: You are a calculator. Evaluate the math expression given to you and return the result.
+  tools:
+  - component_type: ServerTool
+    id: a1b2c3d4-0001-0001-0001-000000000020
+    name: add
+    description: Add two numbers
+    metadata:
+      __metadata_info__: {}
+    inputs:
+    - title: a
+      type: integer
+    - title: b
+      type: integer
+    outputs:
+    - title: sum
+      type: integer
+    requires_confirmation: false
+  toolboxes: []
+  human_in_the_loop: false
+  transforms: []
+  sub_agents: []
+agentspec_version: 26.2.0

@@ -66,6 +66,7 @@ from pyagentspec.adapters.langgraph.tracing import (
     AgentSpecToolCallbackHandler,
 )
 from pyagentspec.agent import Agent as AgentSpecAgent
+from pyagentspec.agenticcomponent import AgenticComponent as AgentSpecAgenticComponent
 from pyagentspec.flows.edges import ControlFlowEdge as AgentSpecControlFlowEdge
 from pyagentspec.flows.edges import DataFlowEdge as AgentSpecDataFlowEdge
 from pyagentspec.flows.flow import Flow as AgentSpecFlow
@@ -124,8 +125,11 @@ from pyagentspec.tracing.events import AgentExecutionEnd as AgentSpecAgentExecut
 from pyagentspec.tracing.events import AgentExecutionStart as AgentSpecAgentExecutionStart
 from pyagentspec.tracing.events import FlowExecutionEnd as AgentSpecFlowExecutionEnd
 from pyagentspec.tracing.events import FlowExecutionStart as AgentSpecFlowExecutionStart
+from pyagentspec.tracing.events import SubAgentExecutionEnd as AgentSpecSubAgentExecutionEnd
+from pyagentspec.tracing.events import SubAgentExecutionStart as AgentSpecSubAgentExecutionStart
 from pyagentspec.tracing.spans import AgentExecutionSpan as AgentSpecAgentExecutionSpan
 from pyagentspec.tracing.spans import FlowExecutionSpan as AgentSpecFlowExecutionSpan
+from pyagentspec.tracing.spans import SubAgentExecutionSpan as AgentSpecSubAgentExecutionSpan
 
 if TYPE_CHECKING:
     from langchain_mcp_adapters.sessions import (
@@ -1200,6 +1204,118 @@ class AgentSpecToLangGraphConverter:
         compiled_graph.astream = patch_async_with_agent_execution_span  # type: ignore
         return compiled_graph
 
+    def _sub_agent_to_langgraph_tool(
+        self,
+        sub_agent: AgentSpecAgenticComponent,
+        tool_registry: Dict[str, LangGraphTool],
+        converted_components: Dict[str, Any],
+        checkpointer: Optional[Checkpointer],
+        config: RunnableConfig,
+    ) -> StructuredTool:
+        """Compile a sub-agent as a LangGraph subgraph and wrap it as a StructuredTool.
+
+        The parent's LLM calls this tool with the sub-agent's declared inputs.
+        The tool invokes the compiled subgraph with a HumanMessage carrying the
+        serialised arguments, and returns the sub-agent's final text response.
+        Execution is wrapped in a SubAgentExecutionSpan for observability.
+        """
+        import json
+
+        from langchain_core.messages import HumanMessage
+
+        # Compile the sub-agent into a LangGraph graph (reuses cached result if already compiled)
+        compiled_subgraph: CompiledStateGraph[Any, Any, Any] = self.convert(
+            sub_agent,
+            tool_registry=tool_registry,
+            converted_components=converted_components,
+            checkpointer=checkpointer,
+            config=config,
+        )
+
+        inputs = sub_agent.inputs or []
+        if inputs:
+            args_schema: type[BaseModel] = create_pydantic_model_from_properties(
+                f"{sub_agent.name}Args", inputs
+            )
+        else:
+            # When no structured inputs are declared, expose a single free-text argument
+            args_schema = create_pydantic_model_from_properties(
+                f"{sub_agent.name}Args",
+                [AgentSpecStringProperty(title="input", description="Task or question for the sub-agent")],
+            )
+
+        description = sub_agent.description or f"Delegate to sub-agent '{sub_agent.name}'."
+
+        def _run(**kwargs: Any) -> str:
+            msg_content = json.dumps(kwargs) if len(kwargs) > 1 else next(iter(kwargs.values()), "")
+            with AgentSpecSubAgentExecutionSpan(
+                name=f"SubAgentExecution[{sub_agent.name}]", sub_agent=sub_agent
+            ) as span:
+                span.add_event(
+                    AgentSpecSubAgentExecutionStart(sub_agent=sub_agent, inputs=kwargs)
+                )
+                result: Dict[str, Any] = compiled_subgraph.invoke(
+                    {"messages": [HumanMessage(content=str(msg_content))]}
+                )
+                messages = result.get("messages", [])
+                final_answer: str = messages[-1].content if messages else ""
+                span.add_event(
+                    AgentSpecSubAgentExecutionEnd(
+                        sub_agent=sub_agent, outputs={"result": final_answer}
+                    )
+                )
+            return final_answer
+
+        async def _arun(**kwargs: Any) -> str:
+            msg_content = json.dumps(kwargs) if len(kwargs) > 1 else next(iter(kwargs.values()), "")
+            span = AgentSpecSubAgentExecutionSpan(
+                name=f"SubAgentExecution[{sub_agent.name}]", sub_agent=sub_agent
+            )
+            try:
+                await span.start_async()
+            except NotImplementedError:
+                span.start()
+            try:
+                try:
+                    await span.add_event_async(
+                        AgentSpecSubAgentExecutionStart(sub_agent=sub_agent, inputs=kwargs)
+                    )
+                except NotImplementedError:
+                    span.add_event(
+                        AgentSpecSubAgentExecutionStart(sub_agent=sub_agent, inputs=kwargs)
+                    )
+                result: Dict[str, Any] = await compiled_subgraph.ainvoke(
+                    {"messages": [HumanMessage(content=str(msg_content))]}
+                )
+                messages = result.get("messages", [])
+                final_answer: str = messages[-1].content if messages else ""
+                try:
+                    await span.add_event_async(
+                        AgentSpecSubAgentExecutionEnd(
+                            sub_agent=sub_agent, outputs={"result": final_answer}
+                        )
+                    )
+                except NotImplementedError:
+                    span.add_event(
+                        AgentSpecSubAgentExecutionEnd(
+                            sub_agent=sub_agent, outputs={"result": final_answer}
+                        )
+                    )
+                return final_answer
+            finally:
+                try:
+                    await span.end_async()
+                except NotImplementedError:
+                    span.end()
+
+        return StructuredTool(
+            name=sub_agent.name,
+            description=description,
+            args_schema=args_schema,
+            func=_run,
+            coroutine=_arun,
+        )
+
     def _agent_convert_to_langgraph(
         self,
         agentspec_component: AgentSpecAgent,
@@ -1208,6 +1324,16 @@ class AgentSpecToLangGraphConverter:
         checkpointer: Optional[Checkpointer],
         config: RunnableConfig,
     ) -> CompiledStateGraph[Any, Any, Any]:
+        sub_agent_tools: List[LangGraphTool] = [
+            self._sub_agent_to_langgraph_tool(
+                sub_agent=sub_agent,
+                tool_registry=tool_registry,
+                converted_components=converted_components,
+                checkpointer=checkpointer,
+                config=config,
+            )
+            for sub_agent in agentspec_component.sub_agents
+        ]
         return self._create_react_agent_with_given_info(
             name=agentspec_component.name,
             system_prompt=agentspec_component.system_prompt,
@@ -1221,6 +1347,7 @@ class AgentSpecToLangGraphConverter:
             converted_components=converted_components,
             checkpointer=checkpointer,
             config=config,
+            additional_langgraph_tools=sub_agent_tools,
         )
 
     def _llm_convert_to_langgraph(
