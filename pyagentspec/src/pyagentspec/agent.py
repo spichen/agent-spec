@@ -6,7 +6,7 @@
 
 """This module defines several Agent Spec components."""
 
-from typing import List
+from typing import List, Set
 
 from pydantic import Field, SerializeAsAny
 
@@ -17,6 +17,7 @@ from pyagentspec.templating import get_placeholder_properties_from_json_object
 from pyagentspec.tools.tool import Tool
 from pyagentspec.tools.toolbox import ToolBox
 from pyagentspec.transforms import MessageTransform
+from pyagentspec.validation_helpers import model_validator_with_error_accumulation
 from pyagentspec.versioning import AgentSpecVersionEnum
 
 
@@ -57,6 +58,49 @@ class Agent(AgenticComponent):
     """Flag that determines if the Agent can request input from the user."""
     transforms: List[MessageTransform] = Field(default_factory=list)
     """Additional message transforms that are applied to the messages before they are passed to the agent's LLM. For example, MessageSummarizationTransform and ConversationSummarizationTransform can be used when the context becomes long."""
+    sub_agents: List[SerializeAsAny[AgenticComponent]] = Field(default_factory=list)
+    """Other agentic components this agent may delegate to.
+
+    The mechanism of delegation (LLM tool-calling, routing node, rule-based dispatch, etc.)
+    is chosen by the runtime adapter. The spec only asserts the delegation relationship.
+    """
+
+    @model_validator_with_error_accumulation
+    def _validate_sub_agents(self) -> "Agent":
+        if not self.sub_agents:
+            return self
+
+        # Unique names within the parent's sub-agent list
+        names = [sa.name for sa in self.sub_agents]
+        duplicates = {n for n in names if names.count(n) > 1}
+        if duplicates:
+            raise ValueError(
+                f"Sub-agent names must be unique within a parent agent. "
+                f"Duplicate name(s) found: {sorted(duplicates)}"
+            )
+
+        # Cycle detection: a sub-agent cannot reach back to this agent transitively
+        self_name = self.name
+        visited: Set[str] = set()
+
+        def _collect_sub_agent_names(component: AgenticComponent) -> None:
+            if component.name in visited:
+                return
+            visited.add(component.name)
+            if isinstance(component, Agent):
+                for child in component.sub_agents:
+                    _collect_sub_agent_names(child)
+
+        for sub_agent in self.sub_agents:
+            _collect_sub_agent_names(sub_agent)
+
+        if self_name in visited:
+            raise ValueError(
+                f"Cycle detected in sub_agents: agent '{self_name}' appears in its own "
+                f"sub-agent hierarchy."
+            )
+
+        return self
 
     def _get_inferred_inputs(self) -> List[Property]:
         # Extract all the placeholders in the prompt and make them string inputs by default
@@ -74,6 +118,7 @@ class Agent(AgenticComponent):
             fields_to_exclude.add("human_in_the_loop")
         if agentspec_version < AgentSpecVersionEnum.v26_2_0:
             fields_to_exclude.add("transforms")
+            fields_to_exclude.add("sub_agents")
         return fields_to_exclude
 
     def _infer_min_agentspec_version_from_configuration(self) -> AgentSpecVersionEnum:
@@ -87,7 +132,7 @@ class Agent(AgenticComponent):
             current_object_min_version = max(
                 current_object_min_version, AgentSpecVersionEnum.v25_4_2
             )
-        if self.transforms:
+        if self.transforms or self.sub_agents:
             current_object_min_version = max(
                 current_object_min_version, AgentSpecVersionEnum.v26_2_0
             )

@@ -13,6 +13,7 @@ from .llmgeneration import LlmGenerationChunkReceived, LlmGenerationRequest, Llm
 from .managerworkers import ManagerWorkersExecutionEnd, ManagerWorkersExecutionStart
 from .node import NodeExecutionEnd, NodeExecutionStart
 from .state import StateSnapshotEmitted
+from .subagent import SubAgentExecutionEnd, SubAgentExecutionStart
 from .swarm import SwarmExecutionEnd, SwarmExecutionStart
 from .tool import (
     ToolConfirmationRequest,
@@ -30,6 +31,8 @@ __all__ = [
     "LlmGenerationRequest",
     "LlmGenerationResponse",
     "LlmGenerationChunkReceived",
+    "SubAgentExecutionStart",
+    "SubAgentExecutionEnd",
     "ToolConfirmationRequest",
     "ToolConfirmationResponse",
     "ToolExecutionRequest",

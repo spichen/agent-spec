@@ -16,6 +16,7 @@ export const VERSION_GATED_FIELDS = {
     toolboxes: AgentSpecVersion.V25_4_2,
     humanInTheLoop: AgentSpecVersion.V25_4_2,
     transforms: AgentSpecVersion.V26_2_0,
+    subAgents: AgentSpecVersion.V26_2_0,
   },
   ServerTool: {
     requiresConfirmation: AgentSpecVersion.V25_4_2,

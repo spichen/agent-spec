@@ -11,6 +11,7 @@ from .managerworkers import ManagerWorkersExecutionSpan
 from .node import NodeExecutionSpan
 from .root import RootSpan
 from .span import Span
+from .subagent import SubAgentExecutionSpan
 from .swarm import SwarmExecutionSpan
 from .tool import ToolExecutionSpan
 
@@ -22,6 +23,7 @@ __all__ = [
     "NodeExecutionSpan",
     "FlowExecutionSpan",
     "ManagerWorkersExecutionSpan",
+    "SubAgentExecutionSpan",
     "SwarmExecutionSpan",
     "RootSpan",
 ]
