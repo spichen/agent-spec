@@ -1115,21 +1115,19 @@ class AgentSpecToLangGraphConverter:
         # relying on the per-tool ``_confirm_then`` wrapper baked into each
         # tool's callable. The flag must be cleared *before* per-tool
         # conversion so ``self.convert(t, ...)`` skips the wrapper — the
-        # middleware now owns confirmation.
-        #
-        # Benefits over ``_confirm_then`` inside a react agent:
-        #  * When an AI turn emits N tool calls, the middleware batches them
-        #    into a single interrupt with N ``action_requests`` entries
-        #    instead of firing N interrupts back-to-back. The resume shape
-        #    ``Command(resume={"decisions": [...]})`` is identical in both
-        #    cases; callers that approve/reject a single call are unaffected.
-        #  * Description text is produced by LangChain's HITL middleware
-        #    (``Tool execution pending approval\n\nTool: ...\nArgs: ...``),
-        #    and the per-call arguments dict is exposed under the LangChain
-        #    convention field ``args`` (``action_requests[].args``). Flow
-        #    ToolNodes continue to go through ``_confirm_then`` so their
-        #    existing ``arguments`` payload shape is unchanged.
-        interrupt_on = _collect_confirmation_tool_configs_and_clear(tools)
+        # middleware now owns confirmation and batches every tool from a
+        # single model turn into one ``action_requests[]`` interrupt.
+        # ``interrupt_on[name] = True`` defers to LangChain's HITL defaults
+        # (``allowed_decisions=["approve", "edit", "reject"]``); callers that
+        # want a narrower decision set can wrap with their own middleware.
+        # Flow ToolNodes still go through ``_confirm_then`` so the existing
+        # ``arguments`` payload shape from ``_confirm_tool_use`` is unchanged
+        # on that path.
+        interrupt_on: Dict[str, Any] = {}
+        for t in tools:
+            if getattr(t, "requires_confirmation", False):
+                interrupt_on[t.name] = True
+                t.requires_confirmation = False
 
         langgraph_tools = (
             (additional_langgraph_tools or [])
@@ -1642,31 +1640,6 @@ def _normalize_title(d: Dict[str, Any]) -> Dict[str, Any]:
     if isinstance(out.get("title"), str):
         out["title"] = out["title"].lower()
     return out
-
-
-def _collect_confirmation_tool_configs_and_clear(
-    tools: List[AgentSpecTool],
-) -> Dict[str, Any]:
-    """Return ``{tool_name: InterruptOnConfig}`` for every tool flagged
-    ``requires_confirmation`` and clear the flag in-place so the per-tool
-    ``_confirm_then`` wrapper is skipped.
-
-    Pass the returned dict to ``HumanInTheLoopMiddleware`` to batch all tool
-    calls from a single model turn into one ``action_requests[]`` interrupt.
-    Passing bare ``True`` to ``interrupt_on`` would default to
-    ``["approve", "edit", "reject"]``; the existing upstream resume shape
-    only accepts ``approve``/``reject``, so the config is built explicitly
-    to preserve that contract.
-
-    Toolbox-level ``requires_confirmation`` isn't consumed by the converter
-    today; only per-tool flags are honored.
-    """
-    interrupt_on: Dict[str, Any] = {}
-    for t in tools:
-        if getattr(t, "requires_confirmation", False):
-            interrupt_on[t.name] = {"allowed_decisions": ["approve", "reject"]}
-            t.requires_confirmation = False
-    return interrupt_on
 
 
 def _confirm_tool_use(tool_name: str, **tool_arguments: Any) -> Tuple[bool, str]:
