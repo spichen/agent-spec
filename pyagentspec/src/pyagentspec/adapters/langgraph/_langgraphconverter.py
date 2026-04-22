@@ -27,7 +27,7 @@ from typing import (
 )
 from uuid import uuid4
 
-from pydantic import BaseModel, SecretStr, create_model
+from pydantic import BaseModel, SecretStr
 from typing_extensions import NotRequired, Required, TypedDict
 
 from pyagentspec import Component as AgentSpecComponent
@@ -922,17 +922,13 @@ class AgentSpecToLangGraphConverter:
             response = interrupt(tool_request)
             return response
 
-        # Inject tool_call_id into args_schema so callers can correlate a
-        # client-supplied tool result back to the parked interrupt. Injected
-        # fields are populated from the ToolCall envelope and hidden from the model.
-        base_args_model = create_pydantic_model_from_properties(
+        # Inject tool_call_id so callers can correlate a client-supplied tool
+        # result back to the parked interrupt. LangChain populates injected
+        # fields from the ToolCall envelope and hides them from the model.
+        args_model = create_pydantic_model_from_properties(
             f"{tool_name}Args",
             agentspec_client_tool.inputs or [],
-        )
-        args_model = create_model(
-            f"{tool_name}Args",
-            __base__=base_args_model,
-            tool_call_id=(Annotated[str, InjectedToolCallId], ...),
+            extra_fields={"tool_call_id": (Annotated[str, InjectedToolCallId], ...)},
         )
 
         structured_tool = StructuredTool(
@@ -1103,14 +1099,13 @@ class AgentSpecToLangGraphConverter:
             config=config,
         )
 
-        # Centralize per-tool requires_confirmation in a single
-        # HumanInTheLoopMiddleware so one model turn batches all tool calls
-        # into one action_requests[] interrupt. Flow ToolNodes still route
-        # through _confirm_then, preserving the existing arguments payload.
+        # A single HumanInTheLoopMiddleware batches all tool calls from one
+        # model turn into one action_requests[] interrupt. Flow ToolNodes
+        # still route through _confirm_then.
         interrupt_on: Dict[str, Any] = {}
         tools_for_convert: List[AgentSpecTool] = []
         for t in tools:
-            if getattr(t, "requires_confirmation", False):
+            if t.requires_confirmation:
                 if checkpointer is None:
                     raise ValueError(
                         f"A Checkpointer is required for tool '{t.name}' because requires_confirmation=True"

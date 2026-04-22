@@ -317,10 +317,6 @@ class ToolNodeExecutor(NodeExecutor):
                 f"ToolNodeExecutor expected a LangChain StructuredTool, but got {type(tool)}."
             )
         self.tool_callable = tool
-        # ClientTool uses ``InjectedToolCallId`` to pass the LLM's tool_call_id
-        # through to its interrupt payload. In a flow there's no upstream
-        # ToolCall envelope, so ``_invoke_tool_*`` calls the underlying
-        # callable directly with a synthesized tool_call_id.
         self._is_client_tool = isinstance(node.tool, AgentSpecClientTool)
 
     def _format_tool_result(self, tool_output: Any) -> ExecuteOutput:
@@ -441,14 +437,10 @@ class ToolNodeExecutor(NodeExecutor):
     def _invoke_tool_sync(self, inputs: Dict[str, Any]) -> Any:
         tool = self.tool_callable
 
-        # ClientTool's converted StructuredTool declares
-        # ``Annotated[str, InjectedToolCallId]`` so LangChain can populate
-        # tool_call_id from the LLM's ToolCall envelope at invocation time.
-        # Flows have no such envelope and ``StructuredTool.invoke(dict)``
-        # would fail schema validation; synthesize an id and call
-        # ``tool.func`` directly. ClientTool's converter always sets both
-        # ``func`` and ``coroutine`` (see _client_tool_convert_to_langgraph),
-        # so no defensive None check is needed.
+        # ClientTool's StructuredTool declares ``Annotated[str, InjectedToolCallId]``,
+        # which LangChain populates from the LLM's ToolCall envelope. Flows
+        # have no such envelope, so synthesize an id and call the underlying
+        # callable directly to bypass the injected-field schema validation.
         if self._is_client_tool:
             return tool.func(tool_call_id=str(uuid4()), **inputs)
 
@@ -468,13 +460,11 @@ class ToolNodeExecutor(NodeExecutor):
     async def _invoke_tool_async(self, inputs: Dict[str, Any]) -> Any:
         tool = self.tool_callable
 
-        # See ``_invoke_tool_sync``: flow ToolNodes have no upstream ToolCall
-        # envelope for ClientTool's injected tool_call_id.
         if self._is_client_tool:
             return await tool.coroutine(tool_call_id=str(uuid4()), **inputs)
 
-        # StructuredTool.ainvoke() falls back to the sync func when coroutine
-        # is absent; StructuredTool.invoke() has no reverse fallback.
+        # ainvoke() falls back to sync func when coroutine is absent;
+        # invoke() has no reverse fallback.
         return await tool.ainvoke(inputs)
 
     def _execute(self, inputs: Dict[str, Any], messages: Messages) -> ExecuteOutput:
