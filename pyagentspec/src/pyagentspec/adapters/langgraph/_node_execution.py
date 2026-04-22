@@ -21,7 +21,6 @@ from pyagentspec.adapters.langgraph._types import (
     CompiledStateGraph,
     ExecuteOutput,
     FlowStateSchema,
-    InjectedToolCallId,
     LangGraphTool,
     Messages,
     NodeExecutionDetails,
@@ -50,6 +49,7 @@ from pyagentspec.flows.nodes import StartNode as AgentSpecStartNode
 from pyagentspec.flows.nodes import ToolNode as AgentSpecToolNode
 from pyagentspec.property import Property as AgentSpecProperty
 from pyagentspec.property import _empty_default as pyagentspec_empty_default
+from pyagentspec.tools import ClientTool as AgentSpecClientTool
 from pyagentspec.tracing.events import NodeExecutionEnd as AgentSpecNodeExecutionEnd
 from pyagentspec.tracing.events import NodeExecutionStart as AgentSpecNodeExecutionStart
 from pyagentspec.tracing.events.exception import ExceptionRaised
@@ -59,24 +59,6 @@ from pyagentspec.tracing.spans.span import get_current_span
 MessageLike = Union[BaseMessage, List[str], Tuple[str, str], str, Dict[str, Any]]
 
 logger = logging.getLogger(__name__)
-
-
-def _schema_has_injected_tool_call_id(args_schema: Any) -> bool:
-    """True if ``args_schema`` has any ``Annotated[..., InjectedToolCallId]`` field."""
-    if args_schema is None:
-        return False
-    try:
-        from langchain_core.tools.base import (
-            _is_injected_arg_type,
-            get_all_basemodel_annotations,
-        )
-    except ImportError:  # pragma: no cover - defensive guard for API drift
-        return False
-    annotations = get_all_basemodel_annotations(args_schema)
-    return any(
-        _is_injected_arg_type(ann, injected_type=InjectedToolCallId)
-        for ann in annotations.values()
-    )
 
 
 class NodeExecutor(ABC):
@@ -335,9 +317,11 @@ class ToolNodeExecutor(NodeExecutor):
                 f"ToolNodeExecutor expected a LangChain StructuredTool, but got {type(tool)}."
             )
         self.tool_callable = tool
-        self._has_injected_tool_call_id = _schema_has_injected_tool_call_id(
-            getattr(tool, "args_schema", None)
-        )
+        # ClientTool uses ``InjectedToolCallId`` to pass the LLM's tool_call_id
+        # through to its interrupt payload. In a flow there's no upstream
+        # ToolCall envelope, so ``_invoke_tool_*`` calls the underlying
+        # callable directly with a synthesized tool_call_id.
+        self._is_client_tool = isinstance(node.tool, AgentSpecClientTool)
 
     def _format_tool_result(self, tool_output: Any) -> ExecuteOutput:
         """
@@ -457,10 +441,14 @@ class ToolNodeExecutor(NodeExecutor):
     def _invoke_tool_sync(self, inputs: Dict[str, Any]) -> Any:
         tool = self.tool_callable
 
-        # Flow ToolNodes lack a ToolCall envelope, so tools with injected
-        # tool_call_id fields must be called directly — StructuredTool.invoke
-        # would also coerce non-string returns into a stringified ToolMessage.
-        if self._has_injected_tool_call_id:
+        # ClientTool's converted StructuredTool declares
+        # ``Annotated[str, InjectedToolCallId]`` so LangChain can populate
+        # tool_call_id from the LLM's ToolCall envelope at invocation time.
+        # Flows have no such envelope and ``StructuredTool.invoke(dict)``
+        # would fail schema validation; synthesize an id and call the
+        # underlying callable directly to preserve raw-return shape for
+        # ``_format_tool_result``.
+        if self._is_client_tool:
             tool_call_id = str(uuid4())
             if tool.func is not None:
                 return tool.func(tool_call_id=tool_call_id, **inputs)
@@ -469,10 +457,10 @@ class ToolNodeExecutor(NodeExecutor):
                     f"StructuredTool '{tool.name}' has neither func nor coroutine and cannot be executed."
                 )
 
-            async def arun_injected():  # type: ignore
+            async def arun_client_tool():  # type: ignore
                 return await tool.coroutine(tool_call_id=tool_call_id, **inputs)
 
-            return run_async_in_sync(arun_injected, method_name="arun_injected")
+            return run_async_in_sync(arun_client_tool, method_name="arun_client_tool")
 
         if tool.func is not None:
             return tool.invoke(inputs)
@@ -490,7 +478,9 @@ class ToolNodeExecutor(NodeExecutor):
     async def _invoke_tool_async(self, inputs: Dict[str, Any]) -> Any:
         tool = self.tool_callable
 
-        if self._has_injected_tool_call_id:
+        # See ``_invoke_tool_sync``: flow ToolNodes have no upstream ToolCall
+        # envelope for ClientTool's injected tool_call_id.
+        if self._is_client_tool:
             tool_call_id = str(uuid4())
             if tool.coroutine is not None:
                 return await tool.coroutine(tool_call_id=tool_call_id, **inputs)
