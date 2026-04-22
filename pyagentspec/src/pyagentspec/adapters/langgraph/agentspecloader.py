@@ -39,12 +39,9 @@ class AgentSpecLoader(AdapterAgnosticAgentSpecLoader):
     config:
         Optional ``RunnableConfig`` to pass to created runnables/graphs.
     middleware:
-        Optional list of LangChain agent middleware instances forwarded verbatim to
+        Optional LangChain agent middleware list forwarded to
         ``langchain_agents.create_agent(middleware=...)`` when compiling an Agent Spec
-        ``Agent`` into a ReAct graph. Order is preserved — index ``0`` is the outermost
-        middleware. When ``None`` or an empty list, the ``middleware`` keyword is
-        omitted entirely from the ``create_agent`` call and behavior is identical to
-        earlier releases.
+        ``Agent`` into a ReAct graph. Order is preserved; index ``0`` is outermost.
     """
 
     def __init__(

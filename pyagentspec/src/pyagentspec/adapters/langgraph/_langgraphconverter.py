@@ -196,13 +196,9 @@ class AgentSpecToLangGraphConverter:
         Parameters
         ----------
         middleware
-            Optional list of LangChain agent middleware instances forwarded
-            to ``langchain_agents.create_agent(middleware=...)`` when
-            building a ReAct agent for an Agent Spec ``Agent``. Order is
-            preserved (index ``0`` is outermost). When ``None`` or empty,
-            the ``middleware`` keyword is omitted from the ``create_agent``
-            call, preserving the byte-identical behavior of earlier
-            releases.
+            Optional LangChain agent middleware list forwarded to
+            ``langchain_agents.create_agent(middleware=...)`` when building a
+            ReAct agent. Order is preserved; index ``0`` is outermost.
         """
         self._middleware: List[Any] = list(middleware or [])
 
@@ -926,12 +922,9 @@ class AgentSpecToLangGraphConverter:
             response = interrupt(tool_request)
             return response
 
-        # Build args_schema from the declared ClientTool inputs, then extend
-        # it with an injected ``tool_call_id`` so langchain's StructuredTool
-        # populates it at invocation time from the ToolCall envelope without
-        # exposing it to the model. Callers can then correlate a frontend-
-        # supplied tool result back to the specific parked interrupt via
-        # ``Command(resume={interrupt_id: content, ...})``.
+        # Inject tool_call_id into args_schema so callers can correlate a
+        # client-supplied tool result back to the parked interrupt. Injected
+        # fields are populated from the ToolCall envelope and hidden from the model.
         base_args_model = create_pydantic_model_from_properties(
             f"{tool_name}Args",
             agentspec_client_tool.inputs or [],
@@ -1110,24 +1103,25 @@ class AgentSpecToLangGraphConverter:
             config=config,
         )
 
-        # Centralize per-tool ``requires_confirmation`` handling in a single
-        # ``HumanInTheLoopMiddleware`` layered over the agent, instead of
-        # relying on the per-tool ``_confirm_then`` wrapper baked into each
-        # tool's callable. The flag must be cleared *before* per-tool
-        # conversion so ``self.convert(t, ...)`` skips the wrapper — the
-        # middleware now owns confirmation and batches every tool from a
-        # single model turn into one ``action_requests[]`` interrupt.
-        # ``interrupt_on[name] = True`` defers to LangChain's HITL defaults
-        # (``allowed_decisions=["approve", "edit", "reject"]``); callers that
-        # want a narrower decision set can wrap with their own middleware.
-        # Flow ToolNodes still go through ``_confirm_then`` so the existing
-        # ``arguments`` payload shape from ``_confirm_tool_use`` is unchanged
-        # on that path.
+        # Centralize per-tool requires_confirmation in a single
+        # HumanInTheLoopMiddleware so one model turn batches all tool calls
+        # into one action_requests[] interrupt. Flow ToolNodes still route
+        # through _confirm_then, preserving the existing arguments payload.
         interrupt_on: Dict[str, Any] = {}
+        tools_for_convert: List[AgentSpecTool] = []
         for t in tools:
             if getattr(t, "requires_confirmation", False):
+                if checkpointer is None:
+                    raise ValueError(
+                        f"A Checkpointer is required for tool '{t.name}' because requires_confirmation=True"
+                    )
                 interrupt_on[t.name] = True
-                t.requires_confirmation = False
+                # Copy instead of mutating the caller's Tool so reloading the
+                # same Agent (or reusing the Tool elsewhere) still installs
+                # the middleware.
+                tools_for_convert.append(t.model_copy(update={"requires_confirmation": False}))
+            else:
+                tools_for_convert.append(t)
 
         langgraph_tools = (
             (additional_langgraph_tools or [])
@@ -1139,7 +1133,7 @@ class AgentSpecToLangGraphConverter:
                     checkpointer=checkpointer,
                     config=config,
                 )
-                for t in tools
+                for t in tools_for_convert
             ]
             + [
                 t
@@ -1166,6 +1160,16 @@ class AgentSpecToLangGraphConverter:
                 inputs=inputs,
             )
 
+        # HITL middleware goes first so it wraps caller-supplied middleware.
+        effective_middleware: List[Any] = []
+        if interrupt_on:
+            from langchain.agents.middleware import HumanInTheLoopMiddleware
+
+            effective_middleware.append(
+                HumanInTheLoopMiddleware(interrupt_on=interrupt_on)
+            )
+        effective_middleware.extend(self._middleware)
+
         create_agent_kwargs: Dict[str, Any] = dict(
             name=name,
             model=model,
@@ -1175,17 +1179,6 @@ class AgentSpecToLangGraphConverter:
             response_format=output_model,
             state_schema=state_schema,
         )
-        # Prepend the HITL middleware so it wraps the rest of the agent
-        # middleware stack. Omit the keyword when neither source contributes
-        # any middleware so the call is byte-identical to earlier releases.
-        effective_middleware: List[Any] = []
-        if interrupt_on:
-            from langchain.agents.middleware import HumanInTheLoopMiddleware
-
-            effective_middleware.append(
-                HumanInTheLoopMiddleware(interrupt_on=interrupt_on)
-            )
-        effective_middleware.extend(self._middleware)
         if effective_middleware:
             create_agent_kwargs["middleware"] = effective_middleware
         compiled_graph = langchain_agents.create_agent(**create_agent_kwargs)

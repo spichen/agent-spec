@@ -816,7 +816,12 @@ def test_server_tool_confirmation_with_typed_outputs_works() -> None:
         ],
         requires_confirmation=True,
     )
-    flow = _make_simple_flow_with_tool(ToolNode(name="bash_node", tool=server_tool))
+    # _make_simple_flow_with_tool only wires the first output edge, so
+    # constrain EndNode to a single matching property.
+    flow = _make_simple_flow_with_tool(
+        ToolNode(name="bash_node", tool=server_tool),
+        end_outputs=[Property(title="stdout", json_schema={"title": "stdout", "type": "string"})],
+    )
 
     # Should not raise ValueError about output schema
     app = AgentSpecLoader(
