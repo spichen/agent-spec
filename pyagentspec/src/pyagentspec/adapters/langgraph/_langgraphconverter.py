@@ -10,6 +10,7 @@ import logging
 import sys
 from typing import (
     TYPE_CHECKING,
+    Annotated,
     Any,
     AsyncGenerator,
     Awaitable,
@@ -51,6 +52,7 @@ from pyagentspec.adapters.langgraph._types import (
     FlowInputSchema,
     FlowOutputSchema,
     FlowStateSchema,
+    InjectedToolCallId,
     LangGraphTool,
     RunnableConfig,
     StateGraph,
@@ -188,6 +190,18 @@ def _create_agent_state_typed_dict(
 
 
 class AgentSpecToLangGraphConverter:
+    def __init__(self, middleware: Optional[List[Any]] = None) -> None:
+        """Create a converter.
+
+        Parameters
+        ----------
+        middleware
+            Optional LangChain agent middleware list forwarded to
+            ``langchain_agents.create_agent(middleware=...)`` when building a
+            ReAct agent. Order is preserved; index ``0`` is outermost.
+        """
+        self._middleware: List[Any] = list(middleware or [])
+
     def convert(
         self,
         agentspec_component: AgentSpecComponent,
@@ -882,7 +896,11 @@ class AgentSpecToLangGraphConverter:
         tool_description = agentspec_client_tool.description or ""
         requires_confirmation = agentspec_client_tool.requires_confirmation
 
-        def client_tool(*args: Any, **kwargs: Any) -> Any:
+        def client_tool(
+            tool_call_id: Annotated[str, InjectedToolCallId],
+            *args: Any,
+            **kwargs: Any,
+        ) -> Any:
             if requires_confirmation:
                 if args:
                     raise ValueError("Args are not supported, please only use kwargs")
@@ -894,6 +912,7 @@ class AgentSpecToLangGraphConverter:
             tool_request = {
                 "type": "client_tool_request",
                 "name": tool_name,
+                "tool_call_id": tool_call_id,
                 "description": tool_description,
                 "inputs": {
                     "args": args,
@@ -903,10 +922,13 @@ class AgentSpecToLangGraphConverter:
             response = interrupt(tool_request)
             return response
 
-        # Use a Pydantic model for args_schema
+        # Inject tool_call_id so callers can correlate a client-supplied tool
+        # result back to the parked interrupt. LangChain populates injected
+        # fields from the ToolCall envelope and hides them from the model.
         args_model = create_pydantic_model_from_properties(
             f"{tool_name}Args",
             agentspec_client_tool.inputs or [],
+            extra_fields={"tool_call_id": (Annotated[str, InjectedToolCallId], ...)},
         )
 
         structured_tool = StructuredTool(
@@ -1076,6 +1098,26 @@ class AgentSpecToLangGraphConverter:
             checkpointer=checkpointer,
             config=config,
         )
+
+        # A single HumanInTheLoopMiddleware batches all tool calls from one
+        # model turn into one action_requests[] interrupt. Flow ToolNodes
+        # still route through _confirm_then.
+        interrupt_on: Dict[str, Any] = {}
+        tools_for_convert: List[AgentSpecTool] = []
+        for t in tools:
+            if t.requires_confirmation:
+                if checkpointer is None:
+                    raise ValueError(
+                        f"A Checkpointer is required for tool '{t.name}' because requires_confirmation=True"
+                    )
+                interrupt_on[t.name] = True
+                # Copy instead of mutating the caller's Tool so reloading the
+                # same Agent (or reusing the Tool elsewhere) still installs
+                # the middleware.
+                tools_for_convert.append(t.model_copy(update={"requires_confirmation": False}))
+            else:
+                tools_for_convert.append(t)
+
         langgraph_tools = (
             (additional_langgraph_tools or [])
             + [
@@ -1086,7 +1128,7 @@ class AgentSpecToLangGraphConverter:
                     checkpointer=checkpointer,
                     config=config,
                 )
-                for t in tools
+                for t in tools_for_convert
             ]
             + [
                 t
@@ -1113,7 +1155,17 @@ class AgentSpecToLangGraphConverter:
                 inputs=inputs,
             )
 
-        compiled_graph = langchain_agents.create_agent(
+        # HITL middleware goes first so it wraps caller-supplied middleware.
+        effective_middleware: List[Any] = []
+        if interrupt_on:
+            from langchain.agents.middleware import HumanInTheLoopMiddleware
+
+            effective_middleware.append(
+                HumanInTheLoopMiddleware(interrupt_on=interrupt_on)
+            )
+        effective_middleware.extend(self._middleware)
+
+        create_agent_kwargs: Dict[str, Any] = dict(
             name=name,
             model=model,
             tools=langgraph_tools,
@@ -1122,6 +1174,9 @@ class AgentSpecToLangGraphConverter:
             response_format=output_model,
             state_schema=state_schema,
         )
+        if effective_middleware:
+            create_agent_kwargs["middleware"] = effective_middleware
+        compiled_graph = langchain_agents.create_agent(**create_agent_kwargs)
 
         # To enable flow execution traces monkey patch all the functions that invoke the compiled graph
 
@@ -1753,13 +1808,3 @@ def _ensure_checkpointer_and_valid_tool_config(
     elif isinstance(agentspec_tool, AgentSpecClientTool) and checkpointer is None:
         raise ValueError(f"A Checkpointer is required when using ClientTool '{tool_name}'.")
 
-    tool_output = agentspec_tool.outputs or []
-    if agentspec_tool.requires_confirmation and (
-        len(tool_output) != 1 or "type" in tool_output[0].json_schema
-    ):
-        # TODO: refine to only raise output property does not support string
-        raise ValueError(
-            f"Invalid output schema for tool '{tool_name}' requiring tool confirmation: "
-            f"json schema should be left unspecified when using tool confirmation, was {tool_output}. "
-            f'Please use outputs=[Property(title="{tool_name}", json_schema={{}})]'
-        )

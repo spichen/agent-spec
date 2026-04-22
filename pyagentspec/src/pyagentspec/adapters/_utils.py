@@ -5,7 +5,7 @@
 # (UPL) 1.0 (LICENSE-UPL or https://oss.oracle.com/licenses/upl), at your option.
 
 import re
-from typing import Any, Dict, List, Literal, Tuple, Union
+from typing import Any, Dict, List, Literal, Optional, Tuple, Union
 
 from pydantic import BaseModel, ConfigDict, Field, create_model
 
@@ -180,7 +180,9 @@ def _build_type_from_schema(
 
 
 def create_pydantic_model_from_properties(
-    model_name: str, properties: List[AgentSpecProperty]
+    model_name: str,
+    properties: List[AgentSpecProperty],
+    extra_fields: Optional[Dict[str, Tuple[Any, Any]]] = None,
 ) -> type[BaseModel]:
     registry = SchemaRegistry()
     fields: Dict[str, Tuple[Any, Any]] = {}
@@ -199,6 +201,9 @@ def create_pydantic_model_from_properties(
             default_field = Field(..., **field_params)
 
         fields[property_.title] = (annotation, default_field)
+
+    if extra_fields:
+        fields.update(extra_fields)
 
     return create_model(model_name, **fields)  # type: ignore
 

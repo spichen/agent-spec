@@ -674,8 +674,12 @@ def test_server_tool_confirmation_in_agent_approve_executes_tool() -> None:
     config = RunnableConfig({"configurable": {"thread_id": "ag1"}})
 
     interrupt_payload = _invoke_until_interrupt(app, {"inputs": {"x": 5}}, config=config)
+    # In the react-agent path, confirmation is now driven by LangChain's
+    # HumanInTheLoopMiddleware, which uses the standard ActionRequest
+    # ``args`` field (not pyagentspec's ``arguments`` alias used by the
+    # per-tool ``_confirm_tool_use`` path that still backs flows).
     assert interrupt_payload["action_requests"][0]["name"] == "double_tool"
-    assert interrupt_payload["action_requests"][0]["arguments"] == {"x": 5}
+    assert interrupt_payload["action_requests"][0]["args"] == {"x": 5}
 
     result = app.invoke(_approve_command(), config=config)
 
@@ -732,7 +736,10 @@ def test_server_tool_confirmation_in_agent_reject_denies_and_does_not_execute() 
     assert called["n"] == 0
     assert "messages" in result and len(result["messages"]) > 1
     tool_result_message = result["messages"][-2]
-    assert "denied execution" in tool_result_message.content
+    # HITL middleware's rejection message (vs the pyagentspec "denied execution"
+    # wording used by the per-tool ``_confirm_tool_use`` path that still backs
+    # flow ToolNodes).
+    assert "rejected" in tool_result_message.content
 
 
 @pytest.mark.anyio
@@ -784,6 +791,51 @@ async def test_async_server_tool_in_agent_executes_via_ainvoke() -> None:
     assert "messages" in result and len(result["messages"]) > 1
     tool_result_message = result["messages"][-2]
     assert "10" in str(tool_result_message.content)
+
+
+def test_server_tool_confirmation_with_typed_outputs_works() -> None:
+    """Tools with requires_confirmation and typed output schemas should load
+    without error.  The output schema is metadata for the LLM, not a runtime
+    validation constraint, so it should not be rejected."""
+    from langchain_core.runnables import RunnableConfig
+    from langgraph.checkpoint.memory import MemorySaver
+
+    from pyagentspec.adapters.langgraph import AgentSpecLoader
+
+    def bash_func(command: str) -> dict:
+        return {"stdout": "hello", "stderr": "", "exit_code": 0}
+
+    server_tool = ServerTool(
+        name="bash",
+        description="Run a shell command",
+        inputs=[Property(title="command", json_schema={"title": "command", "type": "string"})],
+        outputs=[
+            Property(title="stdout", json_schema={"title": "stdout", "type": "string"}),
+            Property(title="stderr", json_schema={"title": "stderr", "type": "string"}),
+            Property(title="exit_code", json_schema={"title": "exit_code", "type": "number"}),
+        ],
+        requires_confirmation=True,
+    )
+    # _make_simple_flow_with_tool only wires the first output edge, so
+    # constrain EndNode to a single matching property.
+    flow = _make_simple_flow_with_tool(
+        ToolNode(name="bash_node", tool=server_tool),
+        end_outputs=[Property(title="stdout", json_schema={"title": "stdout", "type": "string"})],
+    )
+
+    # Should not raise ValueError about output schema
+    app = AgentSpecLoader(
+        tool_registry={"bash": bash_func},
+        checkpointer=MemorySaver(),
+    ).load_component(flow)
+
+    config = RunnableConfig({"configurable": {"thread_id": "typed-out-1"}})
+
+    interrupt_payload = _invoke_until_interrupt(app, {"inputs": {"command": "echo hello"}}, config=config)
+    assert interrupt_payload["action_requests"][0]["name"] == "bash"
+
+    result = app.invoke(_approve_command(), config=config)
+    assert result["outputs"] is not None
 
 
 def test_requires_confirmation_without_checkpointer_raises_for_server_tool_in_flow() -> None:

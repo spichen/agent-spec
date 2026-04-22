@@ -8,6 +8,7 @@ import json
 import logging
 from abc import ABC, abstractmethod
 from typing import Any, Dict, List, Optional, Tuple, Union, cast
+from uuid import uuid4
 
 import anyio
 import httpx
@@ -48,6 +49,7 @@ from pyagentspec.flows.nodes import StartNode as AgentSpecStartNode
 from pyagentspec.flows.nodes import ToolNode as AgentSpecToolNode
 from pyagentspec.property import Property as AgentSpecProperty
 from pyagentspec.property import _empty_default as pyagentspec_empty_default
+from pyagentspec.tools import ClientTool as AgentSpecClientTool
 from pyagentspec.tracing.events import NodeExecutionEnd as AgentSpecNodeExecutionEnd
 from pyagentspec.tracing.events import NodeExecutionStart as AgentSpecNodeExecutionStart
 from pyagentspec.tracing.events.exception import ExceptionRaised
@@ -315,6 +317,7 @@ class ToolNodeExecutor(NodeExecutor):
                 f"ToolNodeExecutor expected a LangChain StructuredTool, but got {type(tool)}."
             )
         self.tool_callable = tool
+        self._is_client_tool = isinstance(node.tool, AgentSpecClientTool)
 
     def _format_tool_result(self, tool_output: Any) -> ExecuteOutput:
         """
@@ -434,6 +437,13 @@ class ToolNodeExecutor(NodeExecutor):
     def _invoke_tool_sync(self, inputs: Dict[str, Any]) -> Any:
         tool = self.tool_callable
 
+        # ClientTool's StructuredTool declares ``Annotated[str, InjectedToolCallId]``,
+        # which LangChain populates from the LLM's ToolCall envelope. Flows
+        # have no such envelope, so synthesize an id and call the underlying
+        # callable directly to bypass the injected-field schema validation.
+        if self._is_client_tool:
+            return tool.func(tool_call_id=str(uuid4()), **inputs)
+
         if tool.func is not None:
             return tool.invoke(inputs)
 
@@ -442,17 +452,20 @@ class ToolNodeExecutor(NodeExecutor):
                 f"StructuredTool '{tool.name}' has neither func nor coroutine and cannot be executed."
             )
 
-        # Async-only tool executed from sync context.
         async def arun():  # type: ignore
             return await tool.ainvoke(inputs)
 
         return run_async_in_sync(arun, method_name="arun")
 
     async def _invoke_tool_async(self, inputs: Dict[str, Any]) -> Any:
-        # LangChain's StructuredTool.ainvoke() already falls back to the sync
-        # implementation when coroutine is absent, so the async path can always
-        # delegate here directly. The reverse fallback does not exist for invoke().
-        return await self.tool_callable.ainvoke(inputs)
+        tool = self.tool_callable
+
+        if self._is_client_tool:
+            return await tool.coroutine(tool_call_id=str(uuid4()), **inputs)
+
+        # ainvoke() falls back to sync func when coroutine is absent;
+        # invoke() has no reverse fallback.
+        return await tool.ainvoke(inputs)
 
     def _execute(self, inputs: Dict[str, Any], messages: Messages) -> ExecuteOutput:
         tool_output = self._invoke_tool_sync(inputs)
