@@ -445,22 +445,12 @@ class ToolNodeExecutor(NodeExecutor):
         # ``Annotated[str, InjectedToolCallId]`` so LangChain can populate
         # tool_call_id from the LLM's ToolCall envelope at invocation time.
         # Flows have no such envelope and ``StructuredTool.invoke(dict)``
-        # would fail schema validation; synthesize an id and call the
-        # underlying callable directly to preserve raw-return shape for
-        # ``_format_tool_result``.
+        # would fail schema validation; synthesize an id and call
+        # ``tool.func`` directly. ClientTool's converter always sets both
+        # ``func`` and ``coroutine`` (see _client_tool_convert_to_langgraph),
+        # so no defensive None check is needed.
         if self._is_client_tool:
-            tool_call_id = str(uuid4())
-            if tool.func is not None:
-                return tool.func(tool_call_id=tool_call_id, **inputs)
-            if tool.coroutine is None:
-                raise TypeError(
-                    f"StructuredTool '{tool.name}' has neither func nor coroutine and cannot be executed."
-                )
-
-            async def arun_client_tool():  # type: ignore
-                return await tool.coroutine(tool_call_id=tool_call_id, **inputs)
-
-            return run_async_in_sync(arun_client_tool, method_name="arun_client_tool")
+            return tool.func(tool_call_id=str(uuid4()), **inputs)
 
         if tool.func is not None:
             return tool.invoke(inputs)
@@ -481,14 +471,7 @@ class ToolNodeExecutor(NodeExecutor):
         # See ``_invoke_tool_sync``: flow ToolNodes have no upstream ToolCall
         # envelope for ClientTool's injected tool_call_id.
         if self._is_client_tool:
-            tool_call_id = str(uuid4())
-            if tool.coroutine is not None:
-                return await tool.coroutine(tool_call_id=tool_call_id, **inputs)
-            if tool.func is not None:
-                return tool.func(tool_call_id=tool_call_id, **inputs)
-            raise TypeError(
-                f"StructuredTool '{tool.name}' has neither func nor coroutine and cannot be executed."
-            )
+            return await tool.coroutine(tool_call_id=str(uuid4()), **inputs)
 
         # StructuredTool.ainvoke() falls back to the sync func when coroutine
         # is absent; StructuredTool.invoke() has no reverse fallback.
