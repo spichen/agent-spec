@@ -188,6 +188,22 @@ def _create_agent_state_typed_dict(
 
 
 class AgentSpecToLangGraphConverter:
+    def __init__(self, middleware: Optional[List[Any]] = None) -> None:
+        """Create a converter.
+
+        Parameters
+        ----------
+        middleware
+            Optional list of LangChain agent middleware instances forwarded
+            to ``langchain_agents.create_agent(middleware=...)`` when
+            building a ReAct agent for an Agent Spec ``Agent``. Order is
+            preserved (index ``0`` is outermost). When ``None`` or empty,
+            the ``middleware`` keyword is omitted from the ``create_agent``
+            call, preserving the byte-identical behavior of earlier
+            releases.
+        """
+        self._middleware: List[Any] = list(middleware or [])
+
     def convert(
         self,
         agentspec_component: AgentSpecComponent,
@@ -705,6 +721,7 @@ class AgentSpecToLangGraphConverter:
             converted_components=converted_components,
             checkpointer=checkpointer,
             config=config,
+            middleware=self._middleware,
         )
 
     def _llm_node_convert_to_langgraph(
@@ -1113,7 +1130,7 @@ class AgentSpecToLangGraphConverter:
                 inputs=inputs,
             )
 
-        compiled_graph = langchain_agents.create_agent(
+        create_agent_kwargs: Dict[str, Any] = dict(
             name=name,
             model=model,
             tools=langgraph_tools,
@@ -1121,6 +1138,13 @@ class AgentSpecToLangGraphConverter:
             checkpointer=checkpointer,
             response_format=output_model,
             state_schema=state_schema,
+        )
+        # Omit the keyword when no middleware was supplied so the call is
+        # byte-identical to earlier releases.
+        if self._middleware:
+            create_agent_kwargs["middleware"] = self._middleware
+        compiled_graph: CompiledStateGraph[Any, Any, Any] = langchain_agents.create_agent(
+            **create_agent_kwargs
         )
 
         # To enable flow execution traces monkey patch all the functions that invoke the compiled graph
@@ -1363,7 +1387,7 @@ class AgentSpecToLangGraphConverter:
                 transport="sse",
                 url=agentspec_component.url,
                 headers=agentspec_component.headers,
-                httpx_client_factory=_HttpxClientFactory(verify=False),
+                httpx_client_factory=_HttpxClientFactory(verify=True),
             )
         if isinstance(agentspec_component, AgentSpecStreamableHTTPmTLSTransport):
             return StreamableHttpConnection(
@@ -1381,7 +1405,7 @@ class AgentSpecToLangGraphConverter:
                 transport="streamable_http",
                 url=agentspec_component.url,
                 headers=agentspec_component.headers,
-                httpx_client_factory=_HttpxClientFactory(verify=False),
+                httpx_client_factory=_HttpxClientFactory(verify=True),
             )
         raise ValueError(
             f"Agent Spec ClientTransport '{agentspec_component.__class__.__name__}' is not supported yet."
