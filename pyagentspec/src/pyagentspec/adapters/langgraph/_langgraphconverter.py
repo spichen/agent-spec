@@ -283,6 +283,7 @@ class AgentSpecToLangGraphConverter:
                 converted_components=converted_components,
                 checkpointer=checkpointer,
                 config=config,
+                middleware=middleware,
             )
         elif isinstance(agentspec_component, AgentSpecLlmConfig):
             return self._llm_convert_to_langgraph(agentspec_component, config=config)
@@ -1158,6 +1159,7 @@ class AgentSpecToLangGraphConverter:
         converted_components: Dict[str, Any],
         checkpointer: Optional[Checkpointer],
         config: RunnableConfig,
+        middleware: List[Any],
     ) -> CompiledStateGraph[Any, Any, Any]:
         """Compile a ``ManagerWorkers`` into a hierarchical LangGraph.
 
@@ -1213,6 +1215,7 @@ class AgentSpecToLangGraphConverter:
                 converted_components=converted_components,
                 checkpointer=checkpointer,
                 config=config,
+                middleware=middleware,
             )
 
         # 2. Render the workers roster into the manager's system prompt
@@ -1248,6 +1251,7 @@ class AgentSpecToLangGraphConverter:
             converted_components=converted_components,
             checkpointer=checkpointer,
             config=config,
+            middleware=middleware,
             additional_langgraph_tools=delegation_tools,
         )
 
