@@ -7,6 +7,7 @@
 
 import inspect
 import logging
+import re
 import sys
 from typing import (
     TYPE_CHECKING,
@@ -2124,6 +2125,10 @@ _MANAGER_NODE_KEY = "__manager__"
 # the normalized worker node name.
 _DELEGATE_TOOL_PREFIX = "delegate_to_"
 
+# Collapses any run of whitespace to a single space so multi-line worker
+# descriptions stay on one roster line.
+_WHITESPACE_RE = re.compile(r"\s+")
+
 
 def _safe_node_name(name: str, fallback_id: str) -> str:
     """Normalize a worker name into a LangGraph node identifier.
@@ -2137,12 +2142,19 @@ def _safe_node_name(name: str, fallback_id: str) -> str:
     name yields an empty string. Falling through both transforms keeps
     node names internally consistent regardless of which input wins.
     """
-    import re as _re
 
     def _norm(s: str) -> str:
-        return _re.sub(r"[^a-z0-9]+", "_", (s or "").lower()).strip("_")
+        return re.sub(r"[^a-z0-9]+", "_", (s or "").lower()).strip("_")
 
     return _norm(name) or _norm(fallback_id) or "worker"
+
+
+def _tc_get(tool_call: Any, key: str) -> Any:
+    """Read ``key`` off a tool call that may be a dict or a pydantic-style
+    object (langchain emits either depending on the message source)."""
+    if isinstance(tool_call, dict):
+        return tool_call.get(key)
+    return getattr(tool_call, key, None)
 
 
 def _append_workers_roster(
@@ -2158,11 +2170,8 @@ def _append_workers_roster(
     """
     if not entries:
         return system_prompt
-    import re as _re
-
-    _ws = _re.compile(r"\s+")
     lines = [
-        f"- {name}: {_ws.sub(' ', description).strip()}"
+        f"- {name}: {_WHITESPACE_RE.sub(' ', description).strip()}"
         for name, description in entries
     ]
     roster = "Available workers:\n" + "\n".join(lines)
@@ -2253,7 +2262,7 @@ def _route_manager_to_worker_or_end(state: Dict[str, Any]) -> str:
     last = messages[-1]
     tool_calls = getattr(last, "tool_calls", None) or []
     for tc in tool_calls:
-        name = tc.get("name") if isinstance(tc, dict) else getattr(tc, "name", None)
+        name = _tc_get(tc, "name")
         if isinstance(name, str) and name.startswith(_DELEGATE_TOOL_PREFIX):
             return name[len(_DELEGATE_TOOL_PREFIX):]
     return langgraph_graph.END
@@ -2278,6 +2287,8 @@ def _wrap_worker_for_subgraph(
     (``afunc``) entrypoints — LangGraph picks the right one based on
     whether the parent graph is invoked via ``invoke`` or ``ainvoke``.
     """
+    from langchain_core.messages import HumanMessage, ToolMessage
+
     from pyagentspec.adapters.langgraph._types import RunnableLambda
 
     delegate_tool_name = f"{_DELEGATE_TOOL_PREFIX}{worker_node_name}"
@@ -2291,11 +2302,7 @@ def _wrap_worker_for_subgraph(
         last_ai = messages[-1]
         tool_calls = getattr(last_ai, "tool_calls", None) or []
         pending_call = next(
-            (
-                tc for tc in tool_calls
-                if (tc.get("name") if isinstance(tc, dict) else getattr(tc, "name", None))
-                == delegate_tool_name
-            ),
+            (tc for tc in tool_calls if _tc_get(tc, "name") == delegate_tool_name),
             None,
         )
         if pending_call is None:
@@ -2303,24 +2310,14 @@ def _wrap_worker_for_subgraph(
                 f"Worker '{worker_node_name}' was routed to but the manager's "
                 f"last message has no '{delegate_tool_name}' tool call."
             )
-        args = (
-            pending_call.get("args") if isinstance(pending_call, dict)
-            else getattr(pending_call, "args", None)
-        ) or {}
-        call_id = (
-            pending_call.get("id") if isinstance(pending_call, dict)
-            else getattr(pending_call, "id", None)
-        ) or ""
+        args = _tc_get(pending_call, "args") or {}
+        call_id = _tc_get(pending_call, "id") or ""
         return args.get("task") or "", call_id
 
     def _tool_message_from(reply: str, call_id: str) -> Dict[str, Any]:
-        from langchain_core.messages import ToolMessage
-
         return {"messages": [ToolMessage(content=reply, tool_call_id=call_id)]}
 
     def _worker_input(task: str) -> Tuple[Dict[str, Any], Dict[str, Any]]:
-        from langchain_core.messages import HumanMessage
-
         # Each worker run gets a fresh thread_id so its message history
         # is isolated across invocations — workers shouldn't accumulate
         # state across delegations within a single manager session,
