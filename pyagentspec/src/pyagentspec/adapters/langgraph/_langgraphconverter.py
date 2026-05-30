@@ -201,6 +201,9 @@ def _create_agent_state_typed_dict(
 
 
 class AgentSpecToLangGraphConverter:
+    def __init__(self) -> None:
+        pass
+
     def convert(
         self,
         agentspec_component: AgentSpecComponent,
@@ -208,9 +211,31 @@ class AgentSpecToLangGraphConverter:
         converted_components: Optional[Dict[str, Any]] = None,
         checkpointer: Optional[Checkpointer] = None,
         config: Optional[RunnableConfig] = None,
+        middleware: Optional[List[Any]] = None,
         **kwargs: Any,
     ) -> Any:
-        """Convert the given PyAgentSpec component object into the corresponding LangGraph component"""
+        """Convert the given PyAgentSpec component object into the corresponding LangGraph component.
+
+        Parameters
+        ----------
+        agentspec_component:
+            The Agent Spec component to convert.
+        tool_registry:
+            Dictionary mapping tool names to LangGraph tool objects.
+        converted_components:
+            Optional cache of already-converted components (keyed by component id).
+        checkpointer:
+            Optional LangGraph checkpointer to wire into created graphs.
+        config:
+            Optional ``RunnableConfig`` to pass to created runnables/graphs.
+        middleware:
+            Optional list of LangChain agent middleware instances forwarded to
+            ``langchain_agents.create_agent(middleware=...)`` when compiling an Agent
+            Spec ``Agent`` into a ReAct graph. Order is preserved — index ``0`` is the
+            outermost middleware. When ``None`` or an empty list, the ``middleware``
+            keyword is omitted entirely from the ``create_agent`` call.
+        """
+        middleware_list: List[Any] = list(middleware or [])
         if converted_components is None:
             converted_components = {}
         if config is None:
@@ -220,7 +245,7 @@ class AgentSpecToLangGraphConverter:
                 config = RunnableConfig({})
         if agentspec_component.id not in converted_components:
             converted_components[agentspec_component.id] = self._convert(
-                agentspec_component, tool_registry, converted_components, checkpointer, config
+                agentspec_component, tool_registry, converted_components, checkpointer, config, middleware_list
             )
         return converted_components[agentspec_component.id]
 
@@ -231,6 +256,7 @@ class AgentSpecToLangGraphConverter:
         converted_components: Dict[str, Any],
         checkpointer: Optional[Checkpointer],
         config: RunnableConfig,
+        middleware: List[Any],
     ) -> Any:
         if isinstance(agentspec_component, AgentSpecAgent):
             return self._agent_convert_to_langgraph(
@@ -239,6 +265,7 @@ class AgentSpecToLangGraphConverter:
                 converted_components=converted_components,
                 checkpointer=checkpointer,
                 config=config,
+                middleware=middleware,
             )
         elif isinstance(agentspec_component, AgentSpecSwarm):
             return self._swarm_convert_to_langgraph(
@@ -247,6 +274,7 @@ class AgentSpecToLangGraphConverter:
                 converted_components=converted_components,
                 checkpointer=checkpointer,
                 config=config,
+                middleware=middleware,
             )
         elif isinstance(agentspec_component, AgentSpecManagerWorkers):
             return self._manager_workers_convert_to_langgraph(
@@ -293,6 +321,7 @@ class AgentSpecToLangGraphConverter:
                 converted_components=converted_components,
                 checkpointer=checkpointer,
                 config=config,
+                middleware=middleware,
             )
         elif isinstance(agentspec_component, AgentSpecNode):
             return self._node_convert_to_langgraph(
@@ -301,6 +330,7 @@ class AgentSpecToLangGraphConverter:
                 converted_components=converted_components,
                 checkpointer=checkpointer,
                 config=config,
+                middleware=middleware,
             )
         elif isinstance(agentspec_component, AgentSpecComponent):
             raise NotImplementedError(
@@ -344,6 +374,7 @@ class AgentSpecToLangGraphConverter:
         converted_components: Dict[str, Any],
         checkpointer: Optional[Checkpointer],
         config: RunnableConfig,
+        middleware: List[Any],
     ) -> CompiledStateGraph[Any, Any, Any]:
 
         graph_builder = StateGraph(
@@ -359,6 +390,7 @@ class AgentSpecToLangGraphConverter:
                 converted_components=converted_components,
                 checkpointer=checkpointer,
                 config=config,
+                middleware=middleware,
             )
             for node in flow.nodes
         }
@@ -539,6 +571,7 @@ class AgentSpecToLangGraphConverter:
         converted_components: Dict[str, Any],
         checkpointer: Optional[Checkpointer],
         config: RunnableConfig,
+        middleware: List[Any],
     ) -> "NodeExecutor":
         if isinstance(node, AgentSpecStartNode):
             return self._start_node_convert_to_langgraph(node)
@@ -567,6 +600,7 @@ class AgentSpecToLangGraphConverter:
                 converted_components=converted_components,
                 checkpointer=checkpointer,
                 config=config,
+                middleware=middleware,
             )
         elif isinstance(node, AgentSpecBranchingNode):
             return self._branching_node_convert_to_langgraph(node)
@@ -717,6 +751,7 @@ class AgentSpecToLangGraphConverter:
         converted_components: Dict[str, Any],
         checkpointer: Optional[Checkpointer],
         config: RunnableConfig,
+        middleware: List[Any],
     ) -> "NodeExecutor":
         from pyagentspec.adapters.langgraph._node_execution import AgentNodeExecutor
 
@@ -726,6 +761,7 @@ class AgentSpecToLangGraphConverter:
             converted_components=converted_components,
             checkpointer=checkpointer,
             config=config,
+            middleware=middleware,
         )
 
     def _llm_node_convert_to_langgraph(
@@ -1012,6 +1048,7 @@ class AgentSpecToLangGraphConverter:
         converted_components: Dict[str, Any],
         checkpointer: Optional[Checkpointer],
         config: RunnableConfig,
+        middleware: List[Any],
     ) -> CompiledStateGraph[Any, Any, Any]:
         if agentspec_component.handoff is AgentSpecHandoffMode.NEVER:
             # As of now, we cannot control what langgraph-swarm does internally in terms of conversation sharing.
@@ -1042,6 +1079,7 @@ class AgentSpecToLangGraphConverter:
                 converted_components=converted_components,
                 checkpointer=checkpointer,
                 config=config,
+                middleware=middleware,
             )
         handoffs: dict[str, list[str]] = {agent_name: [] for agent_name in agents}
         for from_agent, to_agent in agentspec_component.relationships:
@@ -1061,6 +1099,7 @@ class AgentSpecToLangGraphConverter:
                 converted_components=converted_components,
                 checkpointer=checkpointer,
                 config=config,
+                middleware=middleware,
                 additional_langgraph_tools=[
                     langgraph_swarm.create_handoff_tool(agent_name=to_agent_name)
                     for to_agent_name in handoffs.get(agent.name, [])
@@ -1230,6 +1269,7 @@ class AgentSpecToLangGraphConverter:
         converted_components: Dict[str, Any],
         checkpointer: Optional[Checkpointer],
         config: RunnableConfig,
+        middleware: List[Any],
         additional_langgraph_tools: Optional[List[LangGraphTool]] = None,
     ) -> CompiledStateGraph[Any, Any, Any]:
         model = self.convert(
@@ -1276,7 +1316,7 @@ class AgentSpecToLangGraphConverter:
                 inputs=inputs,
             )
 
-        compiled_graph = langchain_agents.create_agent(
+        create_agent_kwargs: Dict[str, Any] = dict(
             name=name,
             model=model,
             tools=langgraph_tools,
@@ -1285,6 +1325,9 @@ class AgentSpecToLangGraphConverter:
             response_format=output_model,
             state_schema=state_schema,
         )
+        if middleware:
+            create_agent_kwargs["middleware"] = middleware
+        compiled_graph = langchain_agents.create_agent(**create_agent_kwargs)
 
         # To enable flow execution traces monkey patch all the functions that invoke the compiled graph
 
@@ -1370,6 +1413,7 @@ class AgentSpecToLangGraphConverter:
         converted_components: Dict[str, Any],
         checkpointer: Optional[Checkpointer],
         config: RunnableConfig,
+        middleware: List[Any],
     ) -> CompiledStateGraph[Any, Any, Any]:
         return self._create_react_agent_with_given_info(
             name=agentspec_component.name,
@@ -1384,6 +1428,7 @@ class AgentSpecToLangGraphConverter:
             converted_components=converted_components,
             checkpointer=checkpointer,
             config=config,
+            middleware=middleware,
         )
 
     def _llm_convert_to_langgraph(
