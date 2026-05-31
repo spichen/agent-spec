@@ -2375,16 +2375,21 @@ def _wrap_worker_for_subgraph(
     def _tool_message_from(reply: str, call_id: str) -> Dict[str, Any]:
         return {"messages": [ToolMessage(content=reply, tool_call_id=call_id)]}
 
-    def _worker_input(task: str) -> Tuple[Dict[str, Any], Dict[str, Any]]:
-        # Each worker run gets a fresh thread_id so its message history
-        # is isolated across invocations — workers shouldn't accumulate
-        # state across delegations within a single manager session,
-        # otherwise the same worker called twice in a row would see its
-        # previous answer as conversation history.
-        return (
-            {"messages": [HumanMessage(content=task)]},
-            {"configurable": {"thread_id": str(uuid4())}},
-        )
+    def _worker_input(task: str) -> Dict[str, Any]:
+        # Content isolation: the worker is fed ONLY the delegated task, never
+        # the manager's history. We deliberately pass NO explicit config so
+        # the worker run *inherits* the ambient run config of this node —
+        # which carries (a) the astream_events callbacks and (b) this node's
+        # ``checkpoint_ns`` (``<worker_node>:<task_id>``). Inheriting the
+        # namespace is what makes the worker's token events stream natively
+        # under the worker node (so consumers can attribute them to the
+        # worker) instead of escaping to a detached ``agent:<uuid>`` run.
+        #
+        # State stays isolated *across* delegations without a fresh thread_id:
+        # LangGraph gives each ``<worker_node>`` invocation a distinct
+        # per-superstep ``checkpoint_ns``, so a worker called twice in a row
+        # starts each run fresh rather than replaying its previous answer.
+        return {"messages": [HumanMessage(content=task)]}
 
     def _last_message_content(result: Any) -> str:
         messages = result.get("messages") if isinstance(result, dict) else None
@@ -2394,14 +2399,12 @@ def _wrap_worker_for_subgraph(
 
     def _run_sync(state: Dict[str, Any]) -> Dict[str, Any]:
         task, call_id = _extract_pending(state)
-        sub_input, sub_config = _worker_input(task)
-        result = worker_graph.invoke(sub_input, sub_config)
+        result = worker_graph.invoke(_worker_input(task))
         return _tool_message_from(_last_message_content(result), call_id)
 
     async def _run_async(state: Dict[str, Any]) -> Dict[str, Any]:
         task, call_id = _extract_pending(state)
-        sub_input, sub_config = _worker_input(task)
-        result = await worker_graph.ainvoke(sub_input, sub_config)
+        result = await worker_graph.ainvoke(_worker_input(task))
         return _tool_message_from(_last_message_content(result), call_id)
 
     return RunnableLambda(
@@ -2670,13 +2673,25 @@ def _patch_hide_delegation_in_astream_events(
     ) -> AsyncGenerator[Any, None]:
         event_filter = _DelegationEventFilter()
         async for event in original_astream_events(*args, **kwargs):
-            if isinstance(event, dict):
-                kept = event_filter.scrub(event)
-                if kept is None:
-                    continue
-                yield kept
-            else:
+            if not isinstance(event, dict):
                 yield event
+                continue
+            # Fail open: a scrubbing bug must never tear down the stream
+            # (which would swallow every later event — notably the worker
+            # events that follow the manager's delegation turn). On error we
+            # emit the event unfiltered rather than dropping the rest.
+            try:
+                kept = event_filter.scrub(event)
+            except Exception:  # noqa: BLE001 — defensive, see above
+                logging.getLogger("pyagentspec.adapters.langgraph").warning(
+                    "ManagerWorkers astream_events delegation filter raised; "
+                    "passing the event through unfiltered.",
+                    exc_info=True,
+                )
+                yield event
+                continue
+            if kept is not None:
+                yield kept
 
     compiled_graph.astream_events = patched_astream_events  # type: ignore[assignment]
 
