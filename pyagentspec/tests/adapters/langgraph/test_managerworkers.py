@@ -687,6 +687,116 @@ def test_delegation_filter_passes_through_real_content() -> None:
     assert out["data"]["chunk"].content == "Hello"
 
 
+def test_worker_events_stream_natively_namespaced_under_worker_node() -> None:
+    """Regression: a worker's token events must stream under the worker
+    node's checkpoint namespace so a consumer can attribute them to the
+    sub-agent. The wrapper must inherit the ambient run config (no fresh
+    thread_id); a fresh thread_id detaches the worker into a top-level
+    ``agent:<uuid>`` run with no worker prefix, which is unattributable."""
+    import asyncio
+
+    from langchain_core.language_models.fake_chat_models import (
+        GenericFakeChatModel,
+    )
+    from langchain_core.messages import AIMessage, HumanMessage
+    from langgraph.graph import END, START, MessagesState, StateGraph
+
+    from pyagentspec.adapters.langgraph._langgraphconverter import (
+        _wrap_worker_for_subgraph,
+    )
+
+    # A minimal worker compiled graph that streams some content.
+    wmodel = GenericFakeChatModel(messages=iter([AIMessage(content="Saturn has rings")] * 9))
+    wb = StateGraph(MessagesState)
+
+    async def _wagent(state: Any) -> Any:
+        return {"messages": [await wmodel.ainvoke(state["messages"])]}
+
+    wb.add_node("agent", _wagent)
+    wb.add_edge(START, "agent")
+    wb.add_edge("agent", END)
+    worker_graph = wb.compile()
+
+    # Parent: a plain manager node emits the delegate tool call, then routes
+    # to the wrapped worker node named "research_helper".
+    pb = StateGraph(MessagesState)
+
+    def _manager(state: Any) -> Any:
+        return {
+            "messages": [
+                AIMessage(
+                    content="",
+                    tool_calls=[
+                        {"name": "delegate_to_research_helper", "args": {"task": "Saturn"}, "id": "c1"}
+                    ],
+                )
+            ]
+        }
+
+    pb.add_node("__manager__", _manager)
+    pb.add_node("research_helper", _wrap_worker_for_subgraph(worker_graph, "research_helper"))
+    pb.add_edge(START, "__manager__")
+    pb.add_edge("__manager__", "research_helper")
+    pb.add_edge("research_helper", END)
+    parent = pb.compile()
+
+    async def _collect() -> Any:
+        namespaces = []
+        async for ev in parent.astream_events(
+            {"messages": [HumanMessage(content="hi")]},
+            {"configurable": {"thread_id": "t"}},
+            version="v2",
+        ):
+            if ev["event"] == "on_chat_model_stream":
+                ns = (ev.get("metadata") or {}).get("langgraph_checkpoint_ns", "")
+                namespaces.append(ns)
+        return namespaces
+
+    namespaces = asyncio.run(_collect())
+    assert namespaces, "expected the worker to emit token-stream events"
+    # Every worker token event is namespaced under the worker node, so a
+    # consumer can attribute the stream to the sub-agent.
+    assert all(ns.startswith("research_helper:") for ns in namespaces), namespaces
+
+
+def test_patched_astream_events_fails_open_on_filter_error() -> None:
+    """A bug in the delegation filter must never tear down the stream and
+    swallow later events (e.g. the worker events that follow the manager's
+    delegation turn). On a scrub error the event is passed through."""
+    import asyncio
+
+    from pyagentspec.adapters.langgraph._langgraphconverter import (
+        _DelegationEventFilter,
+        _patch_hide_delegation_in_astream_events,
+    )
+
+    class _FakeGraph:
+        async def astream_events(self, *a: Any, **k: Any) -> Any:
+            yield {"event": "on_chat_model_stream", "run_id": "boom", "name": "x", "data": {}}
+            yield {"event": "on_chat_model_stream", "run_id": "ok", "name": "x",
+                   "data": {"chunk": "worker-token"}}
+
+    def _explode(self: Any, event: Any) -> Any:
+        if event.get("run_id") == "boom":
+            raise RuntimeError("kaboom")
+        return event
+
+    graph = _FakeGraph()
+    _patch_hide_delegation_in_astream_events(graph)
+
+    async def _collect() -> Any:
+        out = []
+        with patch.object(_DelegationEventFilter, "scrub", new=_explode):
+            async for ev in graph.astream_events():
+                out.append(ev)
+        return out
+
+    events = asyncio.run(_collect())
+    # Both events survive: the one that raised is passed through unfiltered,
+    # and the later (worker) event is still delivered.
+    assert [e["run_id"] for e in events] == ["boom", "ok"]
+
+
 def test_manager_workers_patches_astream_events() -> None:
     """The compiled ManagerWorkers graph has its ``astream_events`` wrapped
     with the delegation scrubber."""
