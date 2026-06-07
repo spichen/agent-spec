@@ -917,13 +917,25 @@ class MapNodeExecutor(NodeExecutor):
                 outputs[collected_output_name].append(output_value)
 
 
+def is_single_string_output(expected_outputs: List[AgentSpecProperty]) -> bool:
+    """Whether the declared outputs are a single string property.
+
+    Such an output is the model's free text, not a structured field, so the
+    adapter takes it directly from the agent's final message rather than forcing
+    structured generation. Mirrors ``LlmNodeExecutor``'s single-string handling
+    and lets a string output work on models without structured-output support.
+    """
+    outputs = expected_outputs or []
+    return len(outputs) == 1 and outputs[0].type == "string"
+
+
 def extract_outputs_from_invoke_result(
     result: Dict[str, Any], expected_outputs: List[AgentSpecProperty]
 ) -> Dict[str, Any]:
     # Extracts the outputs from the return value of an invoke call made on an agent
     # The outputs are typically exposed as part of the `structured_response`, or as entries in the result directly.
     # We give priority to the latter.
-    return {
+    outputs = {
         # Defaults if available
         **{
             output.title: output.default
@@ -939,3 +951,17 @@ def extract_outputs_from_invoke_result(
             if output.title in result
         },
     }
+    # A single string output is the agent's free-text answer, not a structured
+    # field. When structured generation didn't populate it — because the model
+    # lacks structured-output support, or because none was requested (see
+    # ``_create_react_agent_with_given_info``) — fall back to the final message
+    # content so the output still carries the agent's response.
+    if is_single_string_output(expected_outputs):
+        title = expected_outputs[0].title
+        if title not in outputs:
+            messages = result.get("messages")
+            if messages:
+                content = getattr(messages[-1], "content", None)
+                if content is not None:
+                    outputs[title] = content
+    return outputs
