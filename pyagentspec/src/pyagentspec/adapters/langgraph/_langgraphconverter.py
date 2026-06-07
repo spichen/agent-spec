@@ -40,6 +40,7 @@ from pyagentspec.adapters._utils import (
 from pyagentspec.adapters.langgraph._node_execution import (
     NodeExecutor,
     extract_outputs_from_invoke_result,
+    is_single_string_output,
 )
 from pyagentspec.adapters.langgraph._types import (
     AgentState,
@@ -1364,8 +1365,12 @@ class AgentSpecToLangGraphConverter:
         output_model: Optional[type[BaseModel]] = None
         state_schema: Optional[Any] = None
 
-        # Build response (output) model (used for response_format)
-        if outputs:
+        # Build response (output) model (used for response_format). A single
+        # string output is taken from the agent's final message (see
+        # extract_outputs_from_invoke_result), so it needs no structured
+        # generation — mirrors LlmNodeExecutor and lets a string output work on
+        # models without structured-output support.
+        if outputs and not is_single_string_output(outputs):
             output_model = create_pydantic_model_from_properties("AgentOutputModel", outputs)
 
         if inputs:
