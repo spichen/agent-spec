@@ -36,6 +36,9 @@ from pyagentspec.adapters._utils import (
     _build_type_from_schema,
     create_pydantic_model_from_properties,
 )
+from pyagentspec.adapters.langgraph._client_tool_middleware import (
+    ClientToolCallIdMiddleware,
+)
 from pyagentspec.adapters.langgraph._node_execution import (
     NodeExecutor,
     extract_outputs_from_invoke_result,
@@ -1175,8 +1178,16 @@ class AgentSpecToLangGraphConverter:
             response_format=output_model,
             state_schema=state_schema,
         )
-        if middleware:
-            create_agent_kwargs["middleware"] = middleware
+        # Client tools hand control back to the caller via a
+        # ``client_tool_request`` interrupt. Append a middleware that stamps the
+        # originating tool_call_id onto that interrupt so a resuming caller can
+        # correlate the tool result it returns to the right parked interrupt
+        # (innermost, so it sees the interrupt straight off the tool call).
+        effective_middleware = list(middleware or [])
+        if any(isinstance(t, AgentSpecClientTool) for t in tools):
+            effective_middleware.append(ClientToolCallIdMiddleware())
+        if effective_middleware:
+            create_agent_kwargs["middleware"] = effective_middleware
         compiled_graph = langchain_agents.create_agent(**create_agent_kwargs)
 
         # To enable flow execution traces monkey patch all the functions that invoke the compiled graph
