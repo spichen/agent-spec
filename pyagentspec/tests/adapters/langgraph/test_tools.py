@@ -1103,3 +1103,58 @@ def test_invalid_confirmation_resume_payload_raises() -> None:
         ),
     ):
         app.invoke(bad, config=config)
+
+
+def test_client_tool_in_agent_interrupt_carries_tool_call_id() -> None:
+    """A ClientTool called by an agent parks a ``client_tool_request`` interrupt
+    that carries the originating ``tool_call_id``. Without it a caller resuming
+    the run cannot correlate the tool result it returns to the parked interrupt,
+    so the run stalls. The adapter wires ``ClientToolCallIdMiddleware`` to stamp
+    it."""
+    from langchain_core.language_models.fake_chat_models import FakeMessagesListChatModel
+    from langchain_core.messages import AIMessage
+    from langchain_core.runnables import RunnableConfig
+    from langchain_openai import ChatOpenAI
+    from langgraph.checkpoint.memory import MemorySaver
+
+    from pyagentspec.adapters.langgraph import AgentSpecLoader
+
+    class FakeModel(FakeMessagesListChatModel, ChatOpenAI):
+        pass
+
+    fake_model = FakeModel(
+        responses=[
+            AIMessage(
+                content="",
+                tool_calls=[{"name": "ask_user_question", "args": {}, "id": "call_ask_1"}],
+            ),
+            AIMessage(content="Done"),
+        ]
+    )
+
+    agent_spec = Agent(
+        name="agent",
+        system_prompt="You are a helpful agent.",
+        llm_config=OpenAiCompatibleConfig(name="llm", model_id="fake", url="null"),
+        tools=[
+            ClientTool(
+                name="ask_user_question",
+                description="Ask the user a question.",
+                inputs=[],
+            )
+        ],
+    )
+    loader = AgentSpecLoader(tool_registry={}, checkpointer=MemorySaver())
+    with patch.object(
+        AgentSpecToLangGraphConverter, "_llm_convert_to_langgraph", return_value=fake_model
+    ):
+        app = loader.load_component(agent_spec)
+
+    config = RunnableConfig({"configurable": {"thread_id": "client-ag-1"}})
+    interrupt_value = _invoke_until_interrupt(
+        app, {"messages": [{"role": "user", "content": "hi"}]}, config=config
+    )
+
+    assert interrupt_value["type"] == "client_tool_request"
+    assert interrupt_value["name"] == "ask_user_question"
+    assert interrupt_value["tool_call_id"] == "call_ask_1"
