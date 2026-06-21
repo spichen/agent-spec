@@ -7,8 +7,18 @@
 from typing import Any, Dict
 
 import pytest
+from pydantic import BaseModel
 
-from pyagentspec.adapters._utils import render_nested_object_template, render_template
+from pyagentspec.adapters._utils import (
+    render_nested_json_template,
+    render_nested_object_template,
+    render_template,
+)
+
+
+class _Member(BaseModel):
+    userId: str
+    roles: Any = None
 
 
 @pytest.mark.parametrize(
@@ -112,3 +122,34 @@ def test_json_template_are_properly_rendered(
     template: str, inputs: Dict[str, Any], expected: str
 ) -> None:
     assert render_nested_object_template(template, inputs) == expected
+
+
+@pytest.mark.parametrize(
+    "template, inputs, expected",
+    [
+        # A whole-placeholder value keeps its type (list/dict/number/bool/None),
+        # so structured tool arguments survive into a JSON body.
+        ("{{a}}", {"a": [1, 2]}, [1, 2]),
+        ("{{a}}", {"a": None}, None),
+        ("{{a}}", {"a": 5}, 5),
+        ("{{a}}", {"a": True}, True),
+        ("{{a}}", {"a": {"k": "v"}}, {"k": "v"}),
+        # Strings stay strings; embedded placeholders still interpolate.
+        ("{{a}}", {"a": "oneOnOne"}, "oneOnOne"),
+        ("id-{{a}}", {"a": 5}, "id-5"),
+        # Dict keys are always rendered as strings; only values keep their type.
+        (
+            {"input": {"members": "{{members}}", "topic": "{{topic}}", "type": "{{type}}"}},
+            {
+                "members": [_Member(userId="u1", roles=None)],
+                "topic": None,
+                "type": "group",
+            },
+            {"input": {"members": [{"userId": "u1", "roles": None}], "topic": None, "type": "group"}},
+        ),
+    ],
+)
+def test_json_body_template_preserves_value_types(
+    template: Any, inputs: Dict[str, Any], expected: Any
+) -> None:
+    assert render_nested_json_template(template, inputs) == expected

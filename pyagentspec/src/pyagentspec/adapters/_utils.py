@@ -74,6 +74,54 @@ def render_template(template: Any, inputs: Dict[str, Any]) -> str:
     return _render_template_placeholders(template, inputs)
 
 
+def _to_jsonable(value: Any) -> Any:
+    """Normalize a value into JSON-compatible primitives/containers.
+
+    Pydantic models (e.g. the per-input models built from a tool's input schema)
+    are dumped to plain dicts so they serialize correctly into a JSON request
+    body; nested structures are converted recursively.
+    """
+    if isinstance(value, BaseModel):
+        return value.model_dump(mode="json")
+    if isinstance(value, dict):
+        return {k: _to_jsonable(v) for k, v in value.items()}
+    if isinstance(value, (list, tuple, set)):
+        return [_to_jsonable(item) for item in value]
+    return value
+
+
+def render_nested_json_template(object: Any, inputs: Dict[str, Any]) -> Any:
+    """Render a template destined for a JSON request body.
+
+    Behaves like :func:`render_nested_object_template`, except a string *value*
+    that is exactly one placeholder (e.g. ``"{{members}}"``) is replaced by the
+    raw input value with its type preserved (list/dict/number/bool/None) — so
+    structured tool arguments survive as JSON instead of being stringified into a
+    Python ``repr`` (``"[membersItem(...)]"``) or ``"None"``. Strings with
+    surrounding text keep ordinary interpolation, and dict keys are always
+    rendered as strings.
+    """
+    if isinstance(object, str):
+        return _render_json_leaf(object, inputs)
+    elif isinstance(object, bytes):
+        return render_nested_json_template(object.decode("utf-8", errors="replace"), inputs)
+    elif isinstance(object, dict):
+        return {render_template(k, inputs): render_nested_json_template(v, inputs) for k, v in object.items()}
+    elif isinstance(object, list) or isinstance(object, set) or isinstance(object, tuple):
+        return object.__class__([render_nested_json_template(item, inputs) for item in object])
+    else:
+        return object
+
+
+def _render_json_leaf(template: str, inputs: Dict[str, Any]) -> Any:
+    """Whole-placeholder string -> raw (JSON-able) value; otherwise interpolate."""
+    stripped = template.strip()
+    matches = list(re.finditer(TEMPLATE_PLACEHOLDER_REGEXP, stripped))
+    if len(matches) == 1 and matches[0].group(0) == stripped and matches[0].group(1) in inputs:
+        return _to_jsonable(inputs[matches[0].group(1)])
+    return _render_template_placeholders(template, inputs)
+
+
 def _render_template_placeholders(template: str, inputs: Dict[str, Any]) -> str:
     """Render placeholders found in the original template using the list of inputs."""
     rendered_parts: List[str] = []
