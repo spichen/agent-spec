@@ -490,7 +490,7 @@ def test_server_tool_confirmation_flow_approve_executes() -> None:
     assert result["outputs"] == {"result": 10}
 
 
-def test_flow_with_server_tool_confirmation_reject_skips_executes_denial_message() -> None:
+def test_flow_with_server_tool_confirmation_reject_raises_and_skips_execute() -> None:
     from langchain_core.runnables import RunnableConfig
     from langgraph.checkpoint.memory import MemorySaver
 
@@ -521,12 +521,10 @@ def test_flow_with_server_tool_confirmation_reject_skips_executes_denial_message
     config = RunnableConfig({"configurable": {"thread_id": "t2"}})
 
     _ = _invoke_until_interrupt(langgraph_agent, {"inputs": {"x": 5}}, config=config)
-    result = langgraph_agent.invoke(_reject_command("nope"), config=config)
+    with pytest.raises(RuntimeError, match="Tool 'double_tool' was denied"):
+        langgraph_agent.invoke(_reject_command("nope"), config=config)
 
     assert called["n"] == 0  # Tool should not be executed
-
-    assert "outputs" in result
-    assert "denied execution" in str(result["outputs"])
 
 
 def test_flow_with_client_tool_confirmation_approve_then_interrupts_for_client_execution() -> None:
@@ -561,7 +559,7 @@ def test_flow_with_client_tool_confirmation_approve_then_interrupts_for_client_e
     assert client_tool_request["inputs"]["kwargs"] == {"x": 7}
 
 
-def test_flow_with_client_tool_confirmation_reject_returns_denial_and_no_client_request() -> None:
+def test_flow_with_client_tool_confirmation_reject_raises_and_no_client_request() -> None:
     from langchain_core.runnables import RunnableConfig
     from langgraph.checkpoint.memory import MemorySaver
 
@@ -581,10 +579,8 @@ def test_flow_with_client_tool_confirmation_reject_returns_denial_and_no_client_
 
     _ = _invoke_until_interrupt(app, {"inputs": {"x": 7}}, config=config)
 
-    result = app.invoke(_reject_command("no"), config=config)
-    assert "__interrupt__" not in result  # should not proceed to client request
-    assert "outputs" in result
-    assert "denied execution" in str(result["outputs"])
+    with pytest.raises(RuntimeError, match="Tool 'client_double' was denied"):
+        app.invoke(_reject_command("no"), config=config)
 
 
 def test_client_tool_converts_to_structured_tool_with_func_and_coroutine() -> None:
@@ -666,10 +662,9 @@ def test_flow_with_remote_tool_confirmation_reject_does_not_call_http() -> None:
     _ = _invoke_until_interrupt(app, {"inputs": {"x": 3}}, config=config)
 
     with patch("httpx.request") as patched:
-        result = app.invoke(_reject_command("no"), config=config)
+        with pytest.raises(RuntimeError, match="Tool 'remote_echo' was denied"):
+            app.invoke(_reject_command("no"), config=config)
         patched.assert_not_called()
-        assert "outputs" in result
-        assert "denied execution" in str(result["outputs"])
 
 
 def _get_fake_model() -> Any:
@@ -779,12 +774,10 @@ def test_server_tool_confirmation_in_agent_reject_denies_and_does_not_execute() 
     config = RunnableConfig({"configurable": {"thread_id": "ag2"}})
 
     _ = _invoke_until_interrupt(app, {"inputs": {"x": 5}}, config=config)
-    result = app.invoke(_reject_command("no"), config=config)
+    with pytest.raises(RuntimeError, match="Tool 'double_tool' was denied"):
+        app.invoke(_reject_command("no"), config=config)
 
     assert called["n"] == 0
-    assert "messages" in result and len(result["messages"]) > 1
-    tool_result_message = result["messages"][-2]
-    assert "denied execution" in tool_result_message.content
 
 
 @pytest.mark.anyio
@@ -840,8 +833,7 @@ async def test_async_server_tool_in_agent_executes_via_ainvoke() -> None:
 def test_server_tool_confirmation_with_typed_object_output_works() -> None:
     """Tools with requires_confirmation and a typed (object) output schema
     should load without error and execute the approved path. The output schema
-    is metadata for the LLM, not a runtime constraint, and on rejection the
-    denial string maps cleanly into a single declared output."""
+    is metadata for the LLM, not a runtime constraint."""
     from langchain_core.runnables import RunnableConfig
     from langgraph.checkpoint.memory import MemorySaver
 
@@ -1018,7 +1010,7 @@ def test_server_tool_confirmation_with_multi_output_in_flow_tool_node_reject_rai
     config = RunnableConfig({"configurable": {"thread_id": "multi-out-reject-1"}})
     _ = _invoke_until_interrupt(app, {"inputs": {"command": "echo hello"}}, config=config)
 
-    with pytest.raises(Exception, match="denied"):
+    with pytest.raises(RuntimeError, match="denied"):
         app.invoke(_reject_command("nope"), config=config)
 
 
@@ -1051,7 +1043,7 @@ def test_client_tool_confirmation_with_multi_output_in_flow_tool_node_reject_rai
     config = RunnableConfig({"configurable": {"thread_id": "client-multi-out-reject-1"}})
     _ = _invoke_until_interrupt(app, {"inputs": {"command": "echo hello"}}, config=config)
 
-    with pytest.raises(Exception, match="denied"):
+    with pytest.raises(RuntimeError, match="denied"):
         app.invoke(_reject_command("nope"), config=config)
 
 
