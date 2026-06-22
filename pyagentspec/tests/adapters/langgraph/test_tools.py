@@ -940,7 +940,8 @@ def _make_multi_output_flow_with_tool(tool_node):
     )
 
 
-def _make_multi_output_bash_server_tool():
+@pytest.fixture
+def multi_output_bash_server_tool() -> ServerTool:
     return ServerTool(
         name="bash",
         description="Run a shell command",
@@ -954,7 +955,9 @@ def _make_multi_output_bash_server_tool():
     )
 
 
-def test_server_tool_confirmation_with_multi_output_in_flow_tool_node_approve_executes() -> None:
+def test_server_tool_confirmation_with_multi_output_in_flow_tool_node_approve_executes(
+    multi_output_bash_server_tool: ServerTool,
+) -> None:
     """A ServerTool with multiple outputs and requires_confirmation loads and executes
     correctly when the user approves. The outputs are mapped from the returned dict."""
     from langchain_core.runnables import RunnableConfig
@@ -967,7 +970,7 @@ def test_server_tool_confirmation_with_multi_output_in_flow_tool_node_approve_ex
     def bash_func(command: str) -> dict:
         return bash_result
 
-    server_tool = _make_multi_output_bash_server_tool()
+    server_tool = multi_output_bash_server_tool
     flow = _make_multi_output_flow_with_tool(ToolNode(name="bash_node", tool=server_tool))
 
     app = AgentSpecLoader(
@@ -987,7 +990,9 @@ def test_server_tool_confirmation_with_multi_output_in_flow_tool_node_approve_ex
     assert result["outputs"]["exit_code"] == 0
 
 
-def test_server_tool_confirmation_with_multi_output_in_flow_tool_node_reject_raises() -> None:
+def test_server_tool_confirmation_with_multi_output_in_flow_tool_node_reject_raises(
+    multi_output_bash_server_tool: ServerTool,
+) -> None:
     """When a ServerTool with multiple outputs is denied inside a Flow ToolNode, a
     RuntimeError is raised with a clear message rather than returning an unmappable
     denial string."""
@@ -999,7 +1004,7 @@ def test_server_tool_confirmation_with_multi_output_in_flow_tool_node_reject_rai
     def bash_func(command: str) -> dict:
         return {"stdout": "hello", "stderr": "", "exit_code": 0}
 
-    server_tool = _make_multi_output_bash_server_tool()
+    server_tool = multi_output_bash_server_tool
     flow = _make_multi_output_flow_with_tool(ToolNode(name="bash_node", tool=server_tool))
 
     app = AgentSpecLoader(
