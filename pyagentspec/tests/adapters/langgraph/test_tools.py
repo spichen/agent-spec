@@ -11,7 +11,9 @@ from unittest.mock import patch
 import httpx
 import pytest
 
-from pyagentspec.adapters.langgraph._langgraphconverter import AgentSpecToLangGraphConverter
+from pyagentspec.adapters.langgraph._langgraphconverter import (
+    AgentSpecToLangGraphConverter,
+)
 from pyagentspec.agent import Agent
 from pyagentspec.flows.edges.controlflowedge import ControlFlowEdge
 from pyagentspec.flows.edges.dataflowedge import DataFlowEdge
@@ -116,7 +118,12 @@ def test_remote_tool_having_nested_inputs_with_langgraph() -> None:
         # Call the underlying function of the StructuredTool directly with keyword args.
         # The LangGraph converter wraps the function as a StructuredTool with .func attribute.
         result = lang_tool.func(
-            city="Agadir", lat="30.4", lon="-9.6", user="alice", suffix="world", bin_suffix="blob"
+            city="Agadir",
+            lat="30.4",
+            lon="-9.6",
+            user="alice",
+            suffix="world",
+            bin_suffix="blob",
         )
         # Ensure httpx.request was invoked and inspect the kwargs it was called with.
         patched_request.assert_called_once()
@@ -230,11 +237,22 @@ def test_remote_tool_post_raw_body_with_langgraph() -> None:
         ),
         (
             {"value": "{{ v1 }}", "listofvalues": ["a", "{{ v2 }}", "c"]},
-            {"header1": "{{ h1 }}", "Content-Type": "application/x-www-form-urlencoded"},
+            {
+                "header1": "{{ h1 }}",
+                "Content-Type": "application/x-www-form-urlencoded",
+            },
             False,
         ),
-        ("value: {{ v1 }}, listofvalues: [a, {{ v2 }}, c]", {"header1": "{{ h1 }}"}, False),
-        (["value: {{ v1 }}", "listofvalues: [a, {{ v2 }}, c]"], {"header1": "{{ h1 }}"}, True),
+        (
+            "value: {{ v1 }}, listofvalues: [a, {{ v2 }}, c]",
+            {"header1": "{{ h1 }}"},
+            False,
+        ),
+        (
+            ["value: {{ v1 }}", "listofvalues: [a, {{ v2 }}, c]"],
+            {"header1": "{{ h1 }}"},
+            True,
+        ),
     ],
 )
 def test_remote_tool_actual_endpoint_with_langgraph(
@@ -668,7 +686,9 @@ def test_flow_with_remote_tool_confirmation_reject_does_not_call_http() -> None:
 
 
 def _get_fake_model() -> Any:
-    from langchain_core.language_models.fake_chat_models import FakeMessagesListChatModel
+    from langchain_core.language_models.fake_chat_models import (
+        FakeMessagesListChatModel,
+    )
     from langchain_core.messages import AIMessage
     from langchain_openai import ChatOpenAI
 
@@ -715,7 +735,9 @@ def test_server_tool_confirmation_in_agent_approve_executes_tool() -> None:
         checkpointer=MemorySaver(),
     )
     with patch.object(
-        AgentSpecToLangGraphConverter, "_llm_convert_to_langgraph", return_value=_get_fake_model()
+        AgentSpecToLangGraphConverter,
+        "_llm_convert_to_langgraph",
+        return_value=_get_fake_model(),
     ):
         app = loader.load_component(agent_spec)
 
@@ -767,7 +789,9 @@ def test_server_tool_confirmation_in_agent_reject_denies_and_does_not_execute() 
     )
 
     with patch.object(
-        AgentSpecToLangGraphConverter, "_llm_convert_to_langgraph", return_value=_get_fake_model()
+        AgentSpecToLangGraphConverter,
+        "_llm_convert_to_langgraph",
+        return_value=_get_fake_model(),
     ):
         app = loader.load_component(agent_spec)
 
@@ -782,7 +806,9 @@ def test_server_tool_confirmation_in_agent_reject_denies_and_does_not_execute() 
 
 @pytest.mark.anyio
 async def test_async_server_tool_in_agent_executes_via_ainvoke() -> None:
-    from langchain_core.language_models.fake_chat_models import FakeMessagesListChatModel
+    from langchain_core.language_models.fake_chat_models import (
+        FakeMessagesListChatModel,
+    )
     from langchain_core.messages import AIMessage
 
     from pyagentspec.adapters.langgraph import AgentSpecLoader
@@ -817,7 +843,9 @@ async def test_async_server_tool_in_agent_executes_via_ainvoke() -> None:
     )
     with patch.object(FakeMessagesListChatModel, "bind_tools", return_value=fake_model):
         with patch.object(
-            AgentSpecToLangGraphConverter, "_llm_convert_to_langgraph", return_value=fake_model
+            AgentSpecToLangGraphConverter,
+            "_llm_convert_to_langgraph",
+            return_value=fake_model,
         ):
             app = AgentSpecLoader(tool_registry={"double_tool": double_tool_func}).load_component(
                 agent_spec
