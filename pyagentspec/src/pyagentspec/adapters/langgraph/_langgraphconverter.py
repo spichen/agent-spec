@@ -2188,6 +2188,14 @@ _MANAGER_NODE_KEY = "__manager__"
 # the normalized worker node name.
 _DELEGATE_TOOL_PREFIX = "delegate_to_"
 
+# Keys carried on the per-delegation ``Send`` payload from the manager's
+# routing edge to a worker node, so a worker run knows which task it was
+# given and which ``tool_call_id`` its reply ToolMessage must answer. This
+# is what lets one manager turn delegate to several workers at once: each
+# delegation routes as its own ``Send`` and is answered independently.
+_DELEGATE_TASK_KEY = "__delegate_task__"
+_DELEGATE_CALL_ID_KEY = "__delegate_tool_call_id__"
+
 # Collapses any run of whitespace to a single space so multi-line worker
 # descriptions stay on one roster line.
 _WHITESPACE_RE = re.compile(r"\s+")
@@ -2245,17 +2253,20 @@ def _make_worker_delegation_tool(worker_node_name: str) -> Any:
     """Build the ``delegate_to_<worker>`` tool the manager's LLM emits to
     route work to a worker subgraph.
 
-    The tool body returns a ``Command(goto=<worker>, graph=Command.PARENT)``
-    which the langchain ``ToolNode`` propagates up to the parent graph,
-    breaking out of the manager's react-agent inner loop and routing
-    control to the worker subgraph node. The worker reads the pending
-    ``delegate_to_<worker>`` tool-call off the parent state (to recover
-    the ``task`` argument and ``tool_call_id``), runs in an isolated
-    message context, and emits a ToolMessage on its way back. On the
-    next manager turn the LLM sees ``AIMessage(tool_call=delegate)`` +
-    ``ToolMessage(worker_reply)`` and can produce its final answer —
-    a well-formed tool-call / tool-result sequence in the OpenAI
-    contract.
+    The tool body returns a ``Command(graph=Command.PARENT)`` which the
+    langchain ``ToolNode`` propagates up to the parent graph, breaking out
+    of the manager's react-agent inner loop. It deliberately carries **no
+    ``goto``**: routing is the parent graph's conditional edge's job
+    (:func:`_route_manager_to_worker_or_end`), which inspects the manager's
+    AIMessage and fans out one ``Send`` per ``delegate_to_<worker>`` call.
+    Routing via ``goto`` here would be wrong when the manager emits several
+    delegations in a single turn — ``ToolNode`` collapses the multiple
+    parent commands down to one, so only the first worker would run and the
+    other delegations' ``tool_call_id``s would be left unanswered. Each
+    worker run replies with a ToolMessage matched to its ``tool_call_id``;
+    on the next manager turn the LLM sees every ``AIMessage(tool_call)`` +
+    ``ToolMessage(worker_reply)`` pair and can produce its final answer — a
+    well-formed tool-call / tool-result sequence in the OpenAI contract.
 
     Modelled on ``langgraph_swarm.create_handoff_tool``, which uses the
     same Command-propagation pattern for swarm handoffs.
@@ -2284,19 +2295,16 @@ def _make_worker_delegation_tool(worker_node_name: str) -> Any:
         # subgraph's messages — including the AIMessage carrying this
         # tool_call — onto the PARENT state via the update. The
         # ``add_messages`` reducer dedupes by id so existing messages
-        # aren't duplicated. The worker subgraph node will then read the
-        # AIMessage off the parent state (rather than the now-discarded
-        # subgraph state) to recover ``task`` and ``tool_call_id``, and
-        # will emit the real ToolMessage matched to ``tool_call_id`` on
-        # its way back to the manager.
+        # aren't duplicated. The parent's routing edge then reads the
+        # AIMessage off the parent state and fans out a worker run per
+        # delegation, each answering its own ``tool_call_id``.
         subgraph_messages: List[Any] = []
         if isinstance(state, dict):
             subgraph_messages = list(state.get("messages") or [])
         else:
             subgraph_messages = list(getattr(state, "messages", []) or [])
-        del task, tool_call_id  # task is read off the parent state's pending tool call
+        del task, tool_call_id  # task + id are recovered by the routing edge
         return Command(
-            goto=worker_node_name,
             graph=Command.PARENT,
             update={"messages": subgraph_messages},
         )
@@ -2309,26 +2317,47 @@ def _make_worker_delegation_tool(worker_node_name: str) -> Any:
     return _delegate
 
 
-def _route_manager_to_worker_or_end(state: Dict[str, Any]) -> str:
-    """Inspect the manager's last AIMessage. If it tool-called a
-    ``delegate_to_<worker>``, return that worker node name; otherwise
-    return ``END``.
+def _route_manager_to_worker_or_end(state: Dict[str, Any]) -> Any:
+    """Inspect the manager's last AIMessage and fan out one worker run per
+    ``delegate_to_<worker>`` tool call, via ``Send``; return ``END`` when
+    the manager delegated to no one.
 
-    Robust against multiple tool calls in one turn — only the first
-    delegation call routes the graph (any other tool calls on the same
-    AIMessage are real tools the manager invoked, already executed by
-    its react-agent inner loop before we get here).
+    A single manager turn may delegate to several workers at once — the LLM
+    emits multiple ``delegate_to_<worker>`` tool calls in one AIMessage
+    (e.g. "spin up 5 sub-agents"). Every one of those tool calls must be
+    answered by its own ``ToolMessage`` matched to the originating
+    ``tool_call_id``; leaving any unanswered produces a tool-call /
+    tool-result mismatch that violates the OpenAI contract and makes the
+    manager hallucinate the missing replies. We therefore emit one ``Send``
+    per delegation, each carrying the delegated ``task`` and its
+    ``tool_call_id`` so the target worker node can reply to exactly that
+    call. Multiple ``Send``s to the same worker node run as independent
+    tasks. Plain (non-delegation) tool calls were already executed inside
+    the manager's react-agent loop before routing reaches here.
     """
+    from langgraph.types import Send
+
     messages = state.get("messages") or []
     if not messages:
         return langgraph_graph.END
     last = messages[-1]
     tool_calls = getattr(last, "tool_calls", None) or []
+    sends = []
     for tc in tool_calls:
         name = _tc_get(tc, "name")
         if isinstance(name, str) and name.startswith(_DELEGATE_TOOL_PREFIX):
-            return name[len(_DELEGATE_TOOL_PREFIX):]
-    return langgraph_graph.END
+            worker_node_name = name[len(_DELEGATE_TOOL_PREFIX):]
+            args = _tc_get(tc, "args") or {}
+            sends.append(
+                Send(
+                    worker_node_name,
+                    {
+                        _DELEGATE_TASK_KEY: args.get("task") or "",
+                        _DELEGATE_CALL_ID_KEY: _tc_get(tc, "id") or "",
+                    },
+                )
+            )
+    return sends or langgraph_graph.END
 
 
 def _wrap_worker_for_subgraph(
@@ -2357,6 +2386,18 @@ def _wrap_worker_for_subgraph(
     delegate_tool_name = f"{_DELEGATE_TOOL_PREFIX}{worker_node_name}"
 
     def _extract_pending(state: Dict[str, Any]) -> Tuple[str, str]:
+        # Fan-out path: the routing edge's ``Send`` payload carries this
+        # delegation's task and its originating tool_call_id directly, so a
+        # single manager turn can delegate to this worker more than once
+        # without the runs colliding on a shared "first pending call".
+        if isinstance(state, dict) and _DELEGATE_CALL_ID_KEY in state:
+            return (
+                state.get(_DELEGATE_TASK_KEY) or "",
+                state.get(_DELEGATE_CALL_ID_KEY) or "",
+            )
+        # Direct-edge path (a worker wired in without Send): recover task +
+        # id from the manager's last AIMessage. Only the first matching call
+        # is recoverable this way, which is why routing prefers Send.
         messages = state.get("messages") or []
         if not messages:
             raise RuntimeError(

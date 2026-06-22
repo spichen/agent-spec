@@ -85,10 +85,13 @@ def test_append_workers_roster_flattens_multiline_descriptions() -> None:
     assert out == "Available workers:\n- helper: First line second line third line"
 
 
-def test_route_manager_to_worker_or_end_reads_pending_delegation() -> None:
+def test_route_manager_to_worker_or_end_sends_to_pending_delegation() -> None:
     from langchain_core.messages import AIMessage
+    from langgraph.types import Send
 
     from pyagentspec.adapters.langgraph._langgraphconverter import (
+        _DELEGATE_CALL_ID_KEY,
+        _DELEGATE_TASK_KEY,
         _route_manager_to_worker_or_end,
     )
 
@@ -98,8 +101,13 @@ def test_route_manager_to_worker_or_end_reads_pending_delegation() -> None:
             {"name": "delegate_to_research_helper", "args": {"task": "hi"}, "id": "c1"}
         ],
     )
-    state = {"messages": [delegating]}
-    assert _route_manager_to_worker_or_end(state) == "research_helper"
+    sends = _route_manager_to_worker_or_end({"messages": [delegating]})
+    # One delegation → a single Send to the worker node carrying the task
+    # and the tool_call_id its reply must answer.
+    assert isinstance(sends, list) and len(sends) == 1
+    assert isinstance(sends[0], Send)
+    assert sends[0].node == "research_helper"
+    assert sends[0].arg == {_DELEGATE_TASK_KEY: "hi", _DELEGATE_CALL_ID_KEY: "c1"}
 
 
 def test_route_manager_to_worker_or_end_returns_end_when_no_delegation() -> None:
@@ -115,10 +123,13 @@ def test_route_manager_to_worker_or_end_returns_end_when_no_delegation() -> None
     assert _route_manager_to_worker_or_end({"messages": []}) == END
 
 
-def test_route_manager_to_worker_or_end_picks_first_delegation_among_multiple_tool_calls() -> None:
+def test_route_manager_to_worker_or_end_fans_out_every_delegation() -> None:
     from langchain_core.messages import AIMessage
+    from langgraph.types import Send
 
     from pyagentspec.adapters.langgraph._langgraphconverter import (
+        _DELEGATE_CALL_ID_KEY,
+        _DELEGATE_TASK_KEY,
         _route_manager_to_worker_or_end,
     )
 
@@ -130,8 +141,14 @@ def test_route_manager_to_worker_or_end_picks_first_delegation_among_multiple_to
             {"name": "delegate_to_research_helper", "args": {"task": "y"}, "id": "c2"},
         ],
     )
-    # First delegation wins — the others would be handled on the next loop.
-    assert _route_manager_to_worker_or_end({"messages": [msg]}) == "drafter"
+    sends = _route_manager_to_worker_or_end({"messages": [msg]})
+    # Every delegation gets its own Send so each tool_call_id is answered.
+    # The non-delegation tool call was already executed inside the manager's
+    # react loop and is ignored by routing.
+    assert all(isinstance(s, Send) for s in sends)
+    assert [s.node for s in sends] == ["drafter", "research_helper"]
+    assert [s.arg[_DELEGATE_CALL_ID_KEY] for s in sends] == ["c1", "c2"]
+    assert [s.arg[_DELEGATE_TASK_KEY] for s in sends] == ["x", "y"]
 
 
 # ─── Topology test (no LLM execution; checks compiled graph shape) ──────────
@@ -378,6 +395,108 @@ def test_manager_workers_delegates_and_routes_back_with_tool_message() -> None:
     tool_msgs = [m for m in messages if type(m).__name__ == "ToolMessage"]
     assert tool_msgs and tool_msgs[0].tool_call_id == "call_1"
     assert "Saturn has rings" in tool_msgs[0].content
+
+
+def test_manager_workers_answers_every_delegation_in_a_single_turn() -> None:
+    """Regression: when the manager emits SEVERAL ``delegate_to_<worker>``
+    tool calls in one turn (e.g. "spin up 5 sub-agents"), every delegation
+    must run and be answered by its own ToolMessage matched to the
+    originating tool_call_id.
+
+    Before the fix the parent graph routed only the first delegation, so the
+    other tool_call_ids were left unanswered — an invalid tool-call /
+    tool-result sequence that made the manager hallucinate the missing
+    replies. This asserts all three calls get matched ToolMessages.
+    """
+    from langchain_core.messages import AIMessage, HumanMessage
+    from langchain_core.language_models.fake_chat_models import (
+        FakeMessagesListChatModel,
+    )
+    from langgraph.checkpoint.memory import MemorySaver
+
+    from pyagentspec.adapters.langgraph import AgentSpecLoader
+    from pyagentspec.adapters.langgraph._langgraphconverter import (
+        AgentSpecToLangGraphConverter,
+    )
+    from pyagentspec.agent import Agent
+    from pyagentspec.managerworkers import ManagerWorkers
+
+    manager_agent = Agent(
+        name="Coordinator",
+        description="Coordinates",
+        system_prompt="You coordinate.",
+        llm_config=_llm_cfg("manager_llm"),
+    )
+    worker = Agent(
+        name="Sub Agent",
+        description="Writes poems",
+        system_prompt="You write poems.",
+        llm_config=_llm_cfg("worker_llm"),
+    )
+    mw = ManagerWorkers(name="Team", group_manager=manager_agent, workers=[worker])
+
+    # Turn 1: three delegations to the SAME worker in one AIMessage.
+    # Turn 2: terminate (no tool call).
+    manager_responses = [
+        AIMessage(
+            content="",
+            tool_calls=[
+                {"name": "delegate_to_sub_agent", "args": {"task": "Spanish poem"}, "id": "call_1"},
+                {"name": "delegate_to_sub_agent", "args": {"task": "French poem"}, "id": "call_2"},
+                {"name": "delegate_to_sub_agent", "args": {"task": "German poem"}, "id": "call_3"},
+            ],
+        ),
+        AIMessage(content="Here are your three poems."),
+    ]
+    # Each worker invocation pops one reply; provide enough for the fan-out.
+    worker_responses = [AIMessage(content=f"poem #{i}") for i in range(1, 6)]
+
+    fake_manager = _fake_manager(*manager_responses)
+    fake_worker = _fake_manager(*worker_responses)
+
+    def _dispatch(self_obj: Any, llm_config: Any, *args: Any, **kwargs: Any) -> Any:
+        if llm_config.name == "manager_llm":
+            return fake_manager
+        if llm_config.name == "worker_llm":
+            return fake_worker
+        raise AssertionError(f"unexpected llm_config: {llm_config.name}")
+
+    loader = AgentSpecLoader(tool_registry={}, checkpointer=MemorySaver())
+    with patch.object(
+        AgentSpecToLangGraphConverter,
+        "_llm_convert_to_langgraph",
+        autospec=True,
+        side_effect=_dispatch,
+    ), patch.object(
+        FakeMessagesListChatModel,
+        "bind_tools",
+        new=lambda self_obj, *a, **kw: self_obj,
+    ):
+        compiled = loader.load_component(mw)
+
+    result = compiled.invoke(
+        {"messages": [HumanMessage(content="Write 3 poems via sub-agents.")]},
+        {"configurable": {"thread_id": "mw-multi"}},
+    )
+    messages = result["messages"]
+
+    # Every delegation tool_call_id must be answered by exactly one ToolMessage.
+    requested = {
+        tc["id"]
+        for m in messages
+        if isinstance(m, AIMessage)
+        for tc in (m.tool_calls or [])
+        if tc["name"].startswith("delegate_to_")
+    }
+    answered = [m.tool_call_id for m in messages if type(m).__name__ == "ToolMessage"]
+    assert requested == {"call_1", "call_2", "call_3"}
+    assert sorted(answered) == ["call_1", "call_2", "call_3"], (
+        f"unanswered delegations: {requested - set(answered)}"
+    )
+    # No duplicate replies, and each carries a worker poem.
+    assert len(answered) == 3
+    tool_msgs = [m for m in messages if type(m).__name__ == "ToolMessage"]
+    assert all(m.content.startswith("poem #") for m in tool_msgs)
 
 
 # ─── Recursive nesting ──────────────────────────────────────────────────────
