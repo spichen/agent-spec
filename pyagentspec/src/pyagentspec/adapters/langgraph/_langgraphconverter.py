@@ -100,6 +100,7 @@ from pyagentspec.llms.openaiconfig import OpenAiConfig
 from pyagentspec.llms.vllmconfig import VllmConfig
 from pyagentspec.managerworkers import ManagerWorkers as AgentSpecManagerWorkers
 from pyagentspec.mcp.clienttransport import ClientTransport as AgentSpecClientTransport
+from pyagentspec.mcp.clienttransport import RemoteTransport as AgentSpecRemoteTransport
 from pyagentspec.mcp.clienttransport import SSEmTLSTransport as AgentSpecSSEmTLSTransport
 from pyagentspec.mcp.clienttransport import SSETransport as AgentSpecSSETransport
 from pyagentspec.mcp.clienttransport import StdioTransport as AgentSpecStdioTransport
@@ -199,6 +200,21 @@ def _create_agent_state_typed_dict(
         {"total": False},
         _exec_body,
     )
+
+
+def _remote_transport_headers(
+    transport: AgentSpecRemoteTransport,
+) -> Optional[Dict[str, str]]:
+    """Return the headers to send on the wire for a remote MCP transport.
+
+    A ``RemoteTransport`` carries both ``headers`` and ``sensitive_headers``,
+    validated to be disjoint. ``sensitive_headers`` is only redacted from
+    *exported* configs (so credentials never leak into a saved spec) -- it must
+    still travel on live requests. Merge both so a header configured as
+    sensitive (e.g. an ``Authorization`` token) actually reaches the server.
+    """
+    merged = {**(transport.headers or {}), **(transport.sensitive_headers or {})}
+    return merged or None
 
 
 class AgentSpecToLangGraphConverter:
@@ -1671,7 +1687,7 @@ class AgentSpecToLangGraphConverter:
             return SSEConnection(
                 transport="sse",
                 url=agentspec_component.url,
-                headers=agentspec_component.headers,
+                headers=_remote_transport_headers(agentspec_component),
                 httpx_client_factory=_HttpxClientFactory(
                     key_file=agentspec_component.key_file,
                     cert_file=agentspec_component.cert_file,
@@ -1682,14 +1698,14 @@ class AgentSpecToLangGraphConverter:
             return SSEConnection(
                 transport="sse",
                 url=agentspec_component.url,
-                headers=agentspec_component.headers,
+                headers=_remote_transport_headers(agentspec_component),
                 httpx_client_factory=_HttpxClientFactory(verify=True),
             )
         if isinstance(agentspec_component, AgentSpecStreamableHTTPmTLSTransport):
             return StreamableHttpConnection(
                 transport="streamable_http",
                 url=agentspec_component.url,
-                headers=agentspec_component.headers,
+                headers=_remote_transport_headers(agentspec_component),
                 httpx_client_factory=_HttpxClientFactory(
                     key_file=agentspec_component.key_file,
                     cert_file=agentspec_component.cert_file,
@@ -1700,7 +1716,7 @@ class AgentSpecToLangGraphConverter:
             return StreamableHttpConnection(
                 transport="streamable_http",
                 url=agentspec_component.url,
-                headers=agentspec_component.headers,
+                headers=_remote_transport_headers(agentspec_component),
                 httpx_client_factory=_HttpxClientFactory(verify=True),
             )
         raise ValueError(
