@@ -149,6 +149,59 @@ def test_non_mtls_remote_connections_enable_tls_verification(client_transport, e
     assert connection["httpx_client_factory"].verify.check_hostname is True
 
 
+def test_remote_connections_merge_sensitive_headers_into_request(
+    client_key_path, client_cert_path, ca_cert_path
+):
+    """`sensitive_headers` must travel on the wire alongside `headers`.
+
+    Sensitive headers are redacted from *exported* configs but still have to be
+    sent on live requests -- otherwise an Authorization token configured as a
+    sensitive header never reaches the MCP server. Covers all four remote
+    transports, since each builds its own connection.
+    """
+    headers = {"X-Plain": "plain"}
+    sensitive_headers = {"Authorization": "Bearer secret"}
+    expected = {"X-Plain": "plain", "Authorization": "Bearer secret"}
+
+    transports = [
+        SSETransport(
+            name="sse",
+            url="https://example.com/sse",
+            headers=headers,
+            sensitive_headers=sensitive_headers,
+        ),
+        StreamableHTTPTransport(
+            name="streamable-http",
+            url="https://example.com/mcp",
+            headers=headers,
+            sensitive_headers=sensitive_headers,
+        ),
+        SSEmTLSTransport(
+            name="sse-mtls",
+            url="https://example.com/sse",
+            headers=headers,
+            sensitive_headers=sensitive_headers,
+            key_file=client_key_path,
+            cert_file=client_cert_path,
+            ca_file=ca_cert_path,
+        ),
+        StreamableHTTPmTLSTransport(
+            name="streamable-http-mtls",
+            url="https://example.com/mcp",
+            headers=headers,
+            sensitive_headers=sensitive_headers,
+            key_file=client_key_path,
+            cert_file=client_cert_path,
+            ca_file=ca_cert_path,
+        ),
+    ]
+
+    converter = AgentSpecToLangGraphConverter()
+    for transport in transports:
+        connection = converter._client_transport_convert_to_langgraph(transport)
+        assert connection["headers"] == expected, transport.__class__.__name__
+
+
 @pytest.fixture(scope="function")
 def agentspec_agent_with_mcp_toolbox(sse_client_transport, big_llama):
     return Agent(
