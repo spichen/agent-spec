@@ -222,7 +222,7 @@ class AgentSpecCallbackHandler(BaseCallbackHandler):
 
     def _in_async_trace(self) -> bool:
         try:
-            anyio.get_running_tasks()
+            anyio.get_current_task()
             return True
         except RuntimeError:
             return False
