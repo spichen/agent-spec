@@ -20,6 +20,7 @@ const EXCLUDED_FIELDS = new Set(["componentType"]);
  */
 const MODEL_OBJECT_FIELDS: Record<string, boolean> = {
   defaultGenerationParameters: true, // LlmGenerationConfig - exclude nulls
+  retryPolicy: true, // RetryPolicy - exclude nulls
 };
 
 function hasSerializedSensitiveValue(value: unknown): boolean {
