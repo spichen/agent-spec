@@ -52,6 +52,7 @@ from pyagentspec.flows.nodes import ToolNode as AgentSpecToolNode
 from pyagentspec.managerworkers import ManagerWorkers as AgentSpecManagerWorkers
 from pyagentspec.property import Property as AgentSpecProperty
 from pyagentspec.property import _empty_default as pyagentspec_empty_default
+from pyagentspec.swarm import Swarm as AgentSpecSwarm
 from pyagentspec.tracing.events import NodeExecutionEnd as AgentSpecNodeExecutionEnd
 from pyagentspec.tracing.events import NodeExecutionStart as AgentSpecNodeExecutionStart
 from pyagentspec.tracing.events.exception import ExceptionRaised
@@ -581,6 +582,65 @@ class AgentNodeExecutor(NodeExecutor):
             )
         return self._agents_cache[cache_key]
 
+    def _create_swarm_graph_with_given_input_values(
+        self, inputs: Dict[str, Any]
+    ) -> CompiledStateGraph[Any, Any]:
+        """Compile the node's ``Swarm`` into a runnable graph for these inputs.
+
+        Mirrors :meth:`_create_manager_graph_with_given_input_values`: a Swarm flow step
+        runs as a multi-agent graph over ``MessagesState`` and can't carry structured
+        inputs to its inner agents, so the node inputs are rendered into the entry
+        (``first_agent``) ``system_prompt`` (so flow ``{{placeholder}}`` inputs substitute)
+        and the compiled swarm graph is cached by the rendered prompt. The entry agent
+        appears both as ``first_agent`` and inside the relationship tuples the converter
+        builds the swarm from, so it is swapped in both (matched by id) — the converted
+        swarm then uses the rendered prompt and ``default_active_agent`` still resolves by
+        the unchanged name. The now-satisfied input ports are dropped so declared ==
+        inferred and the downstream span re-validation passes. A non-Agent entry agent is
+        left untouched so the converter raises its own clear error.
+        """
+        from pyagentspec.adapters.langgraph._langgraphconverter import AgentSpecToLangGraphConverter
+
+        swarm = self.node.agent
+        if not isinstance(swarm, AgentSpecSwarm):
+            raise TypeError("_create_swarm_graph_with_given_input_values requires a Swarm")
+        entry_agent = swarm.first_agent
+        if isinstance(entry_agent, AgentSpecAgent):
+            cache_key = render_template(entry_agent.system_prompt, inputs)
+            rendered_entry = entry_agent.model_copy(
+                update={"system_prompt": cache_key, "inputs": []}
+            )
+
+            def _swap(agent: Any) -> Any:
+                return rendered_entry if agent.id == entry_agent.id else agent
+
+            rendered_swarm = swarm.model_copy(
+                update={
+                    "first_agent": rendered_entry,
+                    "relationships": [
+                        (_swap(caller), _swap(recipient))
+                        for caller, recipient in swarm.relationships
+                    ],
+                    "inputs": [],
+                }
+            )
+        else:
+            # The converter rejects a non-Agent swarm member; pass through unchanged.
+            cache_key = swarm.id
+            rendered_swarm = swarm
+        if cache_key not in self._agents_cache:
+            self._agents_cache[
+                cache_key
+            ] = AgentSpecToLangGraphConverter()._swarm_convert_to_langgraph(
+                rendered_swarm,
+                tool_registry=self.tool_registry,
+                converted_components=self.converted_components,
+                checkpointer=self.checkpointer,
+                config=self.config,
+                middleware=self._middleware,
+            )
+        return self._agents_cache[cache_key]
+
     def _prepare_agent_and_inputs(
         self, inputs: Dict[str, Any], messages: Messages
     ) -> Tuple[CompiledStateGraph[Any, Any], Dict[str, Any]]:
@@ -595,6 +655,12 @@ class AgentNodeExecutor(NodeExecutor):
             # The node inputs were already rendered into the group-manager prompt, so the
             # graph is driven by messages alone (not the agent's remaining_steps state).
             graph = self._create_manager_graph_with_given_input_values(inputs)
+            return graph, {"messages": messages}
+        if isinstance(self.node.agent, AgentSpecSwarm):
+            # A Swarm flow step runs as a multi-agent graph over MessagesState, same as a
+            # ManagerWorkers: the node inputs were rendered into the entry agent's prompt,
+            # so the graph is driven by messages alone.
+            graph = self._create_swarm_graph_with_given_input_values(inputs)
             return graph, {"messages": messages}
         agent = self._create_react_agent_with_given_input_values(inputs)
         inputs |= {
