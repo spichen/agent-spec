@@ -49,8 +49,10 @@ from pyagentspec.flows.nodes import MapNode as AgentSpecMapNode
 from pyagentspec.flows.nodes import OutputMessageNode as AgentSpecOutputMessageNode
 from pyagentspec.flows.nodes import StartNode as AgentSpecStartNode
 from pyagentspec.flows.nodes import ToolNode as AgentSpecToolNode
+from pyagentspec.managerworkers import ManagerWorkers as AgentSpecManagerWorkers
 from pyagentspec.property import Property as AgentSpecProperty
 from pyagentspec.property import _empty_default as pyagentspec_empty_default
+from pyagentspec.swarm import Swarm as AgentSpecSwarm
 from pyagentspec.tracing.events import NodeExecutionEnd as AgentSpecNodeExecutionEnd
 from pyagentspec.tracing.events import NodeExecutionStart as AgentSpecNodeExecutionStart
 from pyagentspec.tracing.events.exception import ExceptionRaised
@@ -529,16 +531,95 @@ class AgentNodeExecutor(NodeExecutor):
             )
         return self._agents_cache[system_prompt]
 
+    def _create_composite_graph_with_given_input_values(
+        self, inputs: Dict[str, Any]
+    ) -> CompiledStateGraph[Any, Any]:
+        """Compile the node's ``ManagerWorkers`` / ``Swarm`` into a runnable graph for
+        these inputs, cached by the rendered entry-agent prompt.
+
+        Such a graph runs over ``MessagesState`` and can't carry structured inputs to its
+        inner agents, so the node inputs are baked into the entry agent's ``system_prompt``
+        (the ``group_manager`` for a ManagerWorkers, the ``first_agent`` for a Swarm) and
+        the now-satisfied input ports dropped, so declared == inferred for the downstream
+        span re-validation. A non-Agent entry is passed through unchanged so the converter
+        raises its own clear error.
+        """
+        from pyagentspec.adapters.langgraph._langgraphconverter import (
+            AgentSpecToLangGraphConverter,
+        )
+
+        converter = AgentSpecToLangGraphConverter()
+        component = self.node.agent
+        if isinstance(component, AgentSpecManagerWorkers):
+            entry_agent = component.group_manager
+            convert = converter._manager_workers_convert_to_langgraph
+
+            def rebuild(rendered_entry: Any) -> Any:
+                return component.model_copy(update={"group_manager": rendered_entry, "inputs": []})
+
+        elif isinstance(component, AgentSpecSwarm):
+            entry_agent = component.first_agent
+            convert = converter._swarm_convert_to_langgraph
+
+            def rebuild(rendered_entry: Any) -> Any:
+                # The entry agent appears as first_agent and inside the relationship
+                # tuples, so swap it (matched by id) in both.
+                def _swap(agent: Any) -> Any:
+                    return rendered_entry if agent.id == entry_agent.id else agent
+
+                return component.model_copy(
+                    update={
+                        "first_agent": rendered_entry,
+                        "relationships": [
+                            (_swap(caller), _swap(recipient))
+                            for caller, recipient in component.relationships
+                        ],
+                        "inputs": [],
+                    }
+                )
+
+        else:
+            raise TypeError(
+                "_create_composite_graph_with_given_input_values requires a "
+                "ManagerWorkers or Swarm"
+            )
+
+        is_agent_entry = isinstance(entry_agent, AgentSpecAgent)
+        cache_key = (
+            render_template(entry_agent.system_prompt, inputs) if is_agent_entry else component.id
+        )
+        if cache_key not in self._agents_cache:
+            rendered = (
+                rebuild(entry_agent.model_copy(update={"system_prompt": cache_key, "inputs": []}))
+                if is_agent_entry
+                else component
+            )
+            self._agents_cache[cache_key] = convert(
+                rendered,
+                tool_registry=self.tool_registry,
+                converted_components=self.converted_components,
+                checkpointer=self.checkpointer,
+                config=self.config,
+                middleware=self._middleware,
+            )
+        return self._agents_cache[cache_key]
+
     def _prepare_agent_and_inputs(
         self, inputs: Dict[str, Any], messages: Messages
     ) -> Tuple[CompiledStateGraph[Any, Any], Dict[str, Any]]:
-        agent = self._create_react_agent_with_given_input_values(inputs)
         # LangGraph's agent expects at least one user message to drive execution.
         # When an AgentNode is used with a templated system prompt and no messages are provided
         # by the flow, the agent can crash. To avoid this, we artificially insert an empty
         # user message when the message list is empty.
         if not messages:
             messages = cast(Messages, [{"role": "user", "content": ""}])
+        if isinstance(self.node.agent, (AgentSpecManagerWorkers, AgentSpecSwarm)):
+            # A ManagerWorkers / Swarm flow step runs as a multi-agent graph over
+            # MessagesState: node inputs were baked into the entry agent's prompt, so the
+            # graph is driven by messages alone (not the agent's remaining_steps state).
+            graph = self._create_composite_graph_with_given_input_values(inputs)
+            return graph, {"messages": messages}
+        agent = self._create_react_agent_with_given_input_values(inputs)
         inputs |= {
             "remaining_steps": 20,  # Get the right number of steps left
             "messages": messages,
@@ -919,13 +1000,25 @@ class MapNodeExecutor(NodeExecutor):
                 outputs[collected_output_name].append(output_value)
 
 
+def is_single_string_output(expected_outputs: List[AgentSpecProperty]) -> bool:
+    """Whether the declared outputs are a single string property.
+
+    Such an output is the model's free text, not a structured field, so the
+    adapter takes it directly from the agent's final message rather than forcing
+    structured generation. Mirrors ``LlmNodeExecutor``'s single-string handling
+    and lets a string output work on models without structured-output support.
+    """
+    outputs = expected_outputs or []
+    return len(outputs) == 1 and outputs[0].type == "string"
+
+
 def extract_outputs_from_invoke_result(
     result: Dict[str, Any], expected_outputs: List[AgentSpecProperty]
 ) -> Dict[str, Any]:
     # Extracts the outputs from the return value of an invoke call made on an agent
     # The outputs are typically exposed as part of the `structured_response`, or as entries in the result directly.
     # We give priority to the latter.
-    return {
+    outputs = {
         # Defaults if available
         **{
             output.title: output.default
@@ -941,3 +1034,17 @@ def extract_outputs_from_invoke_result(
             if output.title in result
         },
     }
+    # A single string output is the agent's free-text answer, not a structured
+    # field. When structured generation didn't populate it — because the model
+    # lacks structured-output support, or because none was requested (see
+    # ``_create_react_agent_with_given_info``) — fall back to the final message
+    # content so the output still carries the agent's response.
+    if is_single_string_output(expected_outputs):
+        title = expected_outputs[0].title
+        if title not in outputs:
+            messages = result.get("messages")
+            if messages:
+                content = getattr(messages[-1], "content", None)
+                if content is not None:
+                    outputs[title] = content
+    return outputs
