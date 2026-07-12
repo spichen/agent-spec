@@ -1928,6 +1928,15 @@ def _generation_config_from_agentspec(
     return generation_config
 
 
+def _is_openrouter_url(base_url: Optional[str]) -> bool:
+    """True when the OpenAI-compatible endpoint is OpenRouter.
+
+    Kept dependency-free (no ``langchain_openai`` import) so it can gate the
+    lazy import of the OpenRouter handling in ``_openrouter``.
+    """
+    return base_url is not None and "openrouter.ai" in base_url.lower()
+
+
 def _create_chat_openai_model(
     *,
     model_id: str,
@@ -1958,7 +1967,17 @@ def _create_chat_openai_model(
     if api_key is not None:
         optional_kwargs["api_key"] = SecretStr(api_key)
 
-    return ChatOpenAI(
+    chat_openai_cls: type = ChatOpenAI
+    if _is_openrouter_url(base_url):
+        # Only route to backends that support every request parameter (incl.
+        # `tools`), and retry a turn that still comes back empty. Imported
+        # lazily so `langchain_openai` stays an optional dependency.
+        from ._openrouter import PROVIDER_ROUTING_EXTRA_BODY, RetryOnEmptyChatOpenAI
+
+        optional_kwargs["extra_body"] = PROVIDER_ROUTING_EXTRA_BODY
+        chat_openai_cls = RetryOnEmptyChatOpenAI
+
+    return chat_openai_cls(
         model=model_id,
         use_responses_api=use_responses_api,
         callbacks=callbacks,
@@ -1976,6 +1995,7 @@ class _ChatOpenAIOptionalKwargs(TypedDict):
     timeout: NotRequired[float]
     base_url: NotRequired[str]
     api_key: NotRequired[SecretStr]
+    extra_body: NotRequired[Dict[str, Any]]
 
 
 class _GenerationConfig(TypedDict):
