@@ -99,14 +99,14 @@ def test_route_manager_to_worker_or_end_sends_to_pending_delegation() -> None:
     from pyagentspec.adapters.langgraph._managerworkers import (
         _DELEGATE_CALL_ID_KEY,
         _DELEGATE_TASK_KEY,
-        _route_manager_to_worker_or_end,
+        _route_manager_to_worker_handoff_or_end,
     )
 
     delegating = AIMessage(
         content="",
         tool_calls=[{"name": "delegate_to_research_helper", "args": {"task": "hi"}, "id": "c1"}],
     )
-    sends = _route_manager_to_worker_or_end({"messages": [delegating]})
+    sends = _route_manager_to_worker_handoff_or_end({"messages": [delegating]})
     # One delegation → a single Send to the worker node carrying the task
     # and the tool_call_id its reply must answer.
     assert isinstance(sends, list) and len(sends) == 1
@@ -120,12 +120,12 @@ def test_route_manager_to_worker_or_end_returns_end_when_no_delegation() -> None
     from langgraph.graph import END
 
     from pyagentspec.adapters.langgraph._managerworkers import (
-        _route_manager_to_worker_or_end,
+        _route_manager_to_worker_handoff_or_end,
     )
 
     not_delegating = AIMessage(content="Done.", tool_calls=[])
-    assert _route_manager_to_worker_or_end({"messages": [not_delegating]}) == END
-    assert _route_manager_to_worker_or_end({"messages": []}) == END
+    assert _route_manager_to_worker_handoff_or_end({"messages": [not_delegating]}) == END
+    assert _route_manager_to_worker_handoff_or_end({"messages": []}) == END
 
 
 def test_route_manager_to_worker_or_end_fans_out_every_delegation() -> None:
@@ -135,7 +135,7 @@ def test_route_manager_to_worker_or_end_fans_out_every_delegation() -> None:
     from pyagentspec.adapters.langgraph._managerworkers import (
         _DELEGATE_CALL_ID_KEY,
         _DELEGATE_TASK_KEY,
-        _route_manager_to_worker_or_end,
+        _route_manager_to_worker_handoff_or_end,
     )
 
     msg = AIMessage(
@@ -146,7 +146,7 @@ def test_route_manager_to_worker_or_end_fans_out_every_delegation() -> None:
             {"name": "delegate_to_research_helper", "args": {"task": "y"}, "id": "c2"},
         ],
     )
-    sends = _route_manager_to_worker_or_end({"messages": [msg]})
+    sends = _route_manager_to_worker_handoff_or_end({"messages": [msg]})
     # Every delegation gets its own Send so each tool_call_id is answered.
     # The non-delegation tool call was already executed inside the manager's
     # react loop and is ignored by routing.
@@ -1200,6 +1200,202 @@ def test_manager_workers_patches_astream_events() -> None:
     assert getattr(compiled.astream_events, "__name__", "") == "patched_astream_events"
 
 
+# ─── ManagerWorkers as a Swarm member: handoff to a sibling ─────────────────
+
+
+def test_handoff_tool_name_normalizes_like_node_names() -> None:
+    from pyagentspec.adapters.langgraph._managerworkers import (
+        _handoff_tool_name,
+    )
+
+    assert _handoff_tool_name("Specialist") == "transfer_to_specialist"
+    assert _handoff_tool_name("Math Helper v2") == "transfer_to_math_helper_v2"
+    # Empty / punctuation-only falls back to a stable identifier.
+    assert _handoff_tool_name("!!!") == "transfer_to_agent"
+
+
+def test_route_manager_handoff_takes_precedence_over_delegation() -> None:
+    """A ``transfer_to_<sibling>`` call routes to the handoff node, and wins
+    over any ``delegate_to_<worker>`` calls emitted in the same turn."""
+    from langchain_core.messages import AIMessage
+
+    from pyagentspec.adapters.langgraph._managerworkers import (
+        _HANDOFF_NODE_KEY,
+        _route_manager_to_worker_handoff_or_end,
+    )
+
+    mixed = AIMessage(
+        content="",
+        tool_calls=[
+            {"name": "delegate_to_research_helper", "args": {"task": "x"}, "id": "c1"},
+            {"name": "transfer_to_specialist", "args": {}, "id": "c2"},
+        ],
+    )
+    assert _route_manager_to_worker_handoff_or_end({"messages": [mixed]}) == _HANDOFF_NODE_KEY
+
+
+def test_make_handoff_forward_node_reemits_parent_command() -> None:
+    """The handoff node returns a ``Command(goto=<sibling>, graph=PARENT)``
+    that sets ``active_agent`` and forwards the transfer AIMessage ahead of a
+    ToolMessage answering *every* unanswered tool call on it."""
+    from langchain_core.messages import AIMessage, ToolMessage
+    from langgraph.types import Command
+
+    from pyagentspec.adapters.langgraph._managerworkers import (
+        _make_handoff_forward_node,
+    )
+
+    node = _make_handoff_forward_node({"transfer_to_specialist": "Specialist"})
+    transfer_ai = AIMessage(
+        content="",
+        tool_calls=[
+            {"name": "delegate_to_helper", "args": {"task": "y"}, "id": "d1"},
+            {"name": "transfer_to_specialist", "args": {}, "id": "h1"},
+        ],
+    )
+    out = node.invoke({"messages": [transfer_ai]})
+
+    assert isinstance(out, Command)
+    assert out.goto == "Specialist"
+    assert out.graph == Command.PARENT
+    assert out.update["active_agent"] == "Specialist"
+
+    forwarded = out.update["messages"]
+    # Transfer AIMessage first, then a ToolMessage per unanswered call.
+    assert forwarded[0] is transfer_ai
+    tool_msgs = [m for m in forwarded if isinstance(m, ToolMessage)]
+    answered = {m.tool_call_id for m in tool_msgs}
+    assert answered == {"d1", "h1"}
+    transferred = next(m for m in tool_msgs if m.tool_call_id == "h1")
+    assert transferred.content == "Successfully transferred to Specialist"
+
+
+def test_manager_workers_as_swarm_member_hands_off_to_sibling() -> None:
+    """End-to-end: a Swarm whose first member is a ManagerWorkers. The
+    manager's LLM emits ``transfer_to_<sibling>``; the parent graph re-emits
+    the handoff to the Swarm, which routes to the sibling Agent and lets it
+    answer — proving a sub-agent-bearing agent can participate in a Swarm
+    (the case the LangGraph adapter used to reject)."""
+    from langchain_core.language_models.fake_chat_models import (
+        FakeMessagesListChatModel,
+    )
+    from langchain_core.messages import AIMessage, HumanMessage, ToolMessage
+    from langgraph.checkpoint.memory import MemorySaver
+
+    from pyagentspec.adapters.langgraph import AgentSpecLoader
+    from pyagentspec.adapters.langgraph._langgraphconverter import (
+        AgentSpecToLangGraphConverter,
+    )
+    from pyagentspec.agent import Agent
+    from pyagentspec.managerworkers import ManagerWorkers
+    from pyagentspec.swarm import Swarm
+
+    manager_agent = Agent(
+        name="Coordinator",
+        description="Coordinates",
+        system_prompt="You coordinate.",
+        llm_config=_llm_cfg("manager_llm"),
+    )
+    worker = Agent(
+        name="Research Helper",
+        description="Handles research",
+        system_prompt="You research.",
+        llm_config=_llm_cfg("worker_llm"),
+    )
+    team = ManagerWorkers(name="Team", group_manager=manager_agent, workers=[worker])
+    specialist = Agent(
+        name="Specialist",
+        description="Domain specialist",
+        system_prompt="You are the specialist.",
+        llm_config=_llm_cfg("specialist_llm"),
+    )
+    swarm = Swarm(
+        name="Crew",
+        first_agent=team,
+        relationships=[(team, specialist), (specialist, team)],
+    )
+
+    # Manager turn 1: hand the conversation off to the Specialist sibling.
+    fake_manager = _fake_manager(
+        AIMessage(
+            content="",
+            tool_calls=[{"name": "transfer_to_specialist", "args": {}, "id": "call_h1"}],
+        )
+    )
+    fake_specialist = _fake_manager(AIMessage(content="Specialist handled it."))
+    fake_worker = _fake_manager(AIMessage(content="(worker, unused)"))
+
+    def _dispatch(self_obj: Any, llm_config: Any, *args: Any, **kwargs: Any) -> Any:
+        return {
+            "manager_llm": fake_manager,
+            "worker_llm": fake_worker,
+            "specialist_llm": fake_specialist,
+        }[llm_config.name]
+
+    loader = AgentSpecLoader(tool_registry={}, checkpointer=MemorySaver())
+    with patch.object(
+        AgentSpecToLangGraphConverter,
+        "_llm_convert_to_langgraph",
+        autospec=True,
+        side_effect=_dispatch,
+    ), patch.object(
+        FakeMessagesListChatModel,
+        "bind_tools",
+        new=lambda self_obj, *a, **kw: self_obj,
+    ):
+        compiled = loader.load_component(swarm)
+
+    result = compiled.invoke(
+        {"messages": [HumanMessage(content="Please help.")]},
+        {"configurable": {"thread_id": "crew-1"}},
+    )
+    messages = result["messages"]
+
+    # The Specialist produced the final answer → the handoff actually routed.
+    assert isinstance(messages[-1], AIMessage)
+    assert "Specialist handled it." in messages[-1].content
+
+    # The transfer is a well-formed AIMessage(tool_call) → ToolMessage pair.
+    transferred = [
+        m
+        for m in messages
+        if isinstance(m, ToolMessage) and m.content == "Successfully transferred to Specialist"
+    ]
+    assert transferred and transferred[0].tool_call_id == "call_h1"
+
+    # Transcript validity: every ToolMessage answers a preceding AIMessage
+    # tool_call with a matching id (an orphan ToolMessage would 400 a real LLM).
+    open_call_ids: set = set()
+    for m in messages:
+        for tc in getattr(m, "tool_calls", None) or []:
+            open_call_ids.add(tc["id"])
+        if isinstance(m, ToolMessage):
+            assert (
+                m.tool_call_id in open_call_ids
+            ), f"orphan ToolMessage {m.tool_call_id} with no preceding tool_call"
+
+
+def test_swarm_rejects_unsupported_member_type() -> None:
+    """A Swarm member that is neither an Agent nor a ManagerWorkers (here a
+    nested Swarm) raises a clear NotImplementedError — there is no single
+    LLM to attach the handoff tools to."""
+    import pytest
+
+    from pyagentspec.adapters.langgraph._langgraphconverter import (
+        AgentSpecToLangGraphConverter,
+    )
+    from pyagentspec.agent import Agent
+    from pyagentspec.swarm import Swarm
+
+    a1 = Agent(name="A1", description="a1", system_prompt="x", llm_config=_llm_cfg("l1"))
+    a2 = Agent(name="A2", description="a2", system_prompt="y", llm_config=_llm_cfg("l2"))
+    nested = Swarm(name="Nested", first_agent=a1, relationships=[(a1, a2)])
+    outer = Swarm(name="Outer", first_agent=nested, relationships=[(nested, a1)])
+
+    with pytest.raises(NotImplementedError, match="Swarm"):
+        AgentSpecToLangGraphConverter().convert(outer, tool_registry={})
+
+
 # ─── Shared low-level helper unit tests (no LLM) ─────────────────────────────
 
 
@@ -1215,9 +1411,24 @@ def test_normalize_identifier_lowercases_collapses_and_strips() -> None:
     assert _normalize_identifier("") == ""
 
 
+def test_node_name_and_handoff_tool_name_share_one_normalization() -> None:
+    """Invariant the dedup relies on: a worker node name and a sibling handoff
+    tool name normalize identically, so a handoff ``goto`` (the raw sibling
+    name) and the routing node names stay in lockstep."""
+    from pyagentspec.adapters.langgraph._managerworkers import (
+        _handoff_tool_name,
+        _normalize_identifier,
+        _safe_node_name,
+    )
+
+    for name in ("Math Helper v2", "Specialist", "weird  --  Name"):
+        assert _safe_node_name(name, "fallback") == _normalize_identifier(name)
+        assert _handoff_tool_name(name) == "transfer_to_" + _normalize_identifier(name)
+
+
 def test_messages_of_reads_dict_and_object_state() -> None:
-    """The delegation tool receives state as a dict or an attribute-bearing
-    object depending on the langgraph injection path."""
+    """The delegation / handoff tools receive state as a dict or an
+    attribute-bearing object depending on the langgraph injection path."""
     from langchain_core.messages import AIMessage
 
     from pyagentspec.adapters.langgraph._managerworkers import _messages_of
@@ -1239,8 +1450,9 @@ def test_messages_of_reads_dict_and_object_state() -> None:
 
 
 def test_surface_to_parent_command_projects_messages_with_no_goto() -> None:
-    """The placeholder tool's body: break to the parent graph, project the
-    subgraph messages, carry no ``goto`` (routing is the parent's job)."""
+    """The body shared by both placeholder tools: break to the parent graph,
+    project the subgraph messages, carry no ``goto`` (routing is the parent's
+    job)."""
     from langchain_core.messages import AIMessage
     from langgraph.types import Command
 
@@ -1255,13 +1467,20 @@ def test_surface_to_parent_command_projects_messages_with_no_goto() -> None:
     assert cmd.update == {"messages": [m1, m2]}
 
 
-def test_delegation_tool_exposes_expected_name_and_description() -> None:
-    """The placeholder tool the manager's LLM addresses by name."""
-    from pyagentspec.adapters.langgraph._managerworkers import _make_worker_delegation_tool
+def test_delegation_and_handoff_tools_expose_expected_name_and_description() -> None:
+    """The placeholder tools the manager's LLM addresses by name."""
+    from pyagentspec.adapters.langgraph._managerworkers import (
+        _make_swarm_handoff_tool,
+        _make_worker_delegation_tool,
+    )
 
     delegate = _make_worker_delegation_tool("research_helper")
     assert delegate.name == "delegate_to_research_helper"
     assert "research_helper" in delegate.description
+
+    handoff = _make_swarm_handoff_tool("Specialist")
+    assert handoff.name == "transfer_to_specialist"
+    assert "Specialist" in handoff.description
 
 
 # ─── _wrap_worker_for_subgraph: pending-delegation extraction (no LLM) ────────

@@ -15,6 +15,7 @@ from typing_extensions import Self
 
 from pyagentspec.agenticcomponent import AgenticComponent
 from pyagentspec.component import SerializeAsEnum
+from pyagentspec.property import Property
 from pyagentspec.validation_helpers import model_validator_with_error_accumulation
 from pyagentspec.versioning import AgentSpecVersionEnum
 
@@ -126,6 +127,24 @@ class Swarm(AgenticComponent):
     min_agentspec_version: SkipJsonSchema[AgentSpecVersionEnum] = Field(
         default=AgentSpecVersionEnum.v25_4_2, init=False, exclude=True
     )
+
+    def _get_inferred_inputs(self) -> List[Property]:
+        """A ``Swarm`` exposes the inputs of its entry agent (``first_agent``).
+
+        Symmetric with :meth:`ManagerWorkers._get_inferred_inputs`. The ``first_agent``
+        is the swarm's entry point — it interacts with the user before any handoff — so
+        the swarm component accepts exactly the inputs that agent accepts (e.g. the
+        ``{{placeholder}}`` inputs of an ``Agent`` entry's prompt). Without this, the base
+        default infers no inputs, so a flow ``AgentNode`` wrapping a swarm declares no
+        input ports and a ``DataFlowEdge`` into it fails to resolve at load.
+        """
+        first_agent = getattr(self, "first_agent", None)
+        return list(getattr(first_agent, "inputs", None) or [])
+
+    def _get_inferred_outputs(self) -> List[Property]:
+        """Outputs of the entry agent (``first_agent``); see :meth:`_get_inferred_inputs`."""
+        first_agent = getattr(self, "first_agent", None)
+        return list(getattr(first_agent, "outputs", None) or [])
 
     @model_validator(mode="before")
     def _raise_warning_if_handoff_is_bool(cls: Self, values: Any) -> Any:

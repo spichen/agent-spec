@@ -4,13 +4,14 @@
 # (LICENSE-APACHE or http://www.apache.org/licenses/LICENSE-2.0) or Universal Permissive License
 # (UPL) 1.0 (LICENSE-UPL or https://oss.oracle.com/licenses/upl), at your option.
 
-"""ManagerWorkers LangGraph compilation helpers.
+"""ManagerWorkers / Swarm LangGraph compilation helpers.
 
-Module-level building blocks for compiling a ``ManagerWorkers`` into LangGraph.
-The ``AgentSpecToLangGraphConverter`` method
-``_manager_workers_convert_to_langgraph`` orchestrates these helpers; the
-helpers themselves are pure functions with no dependency on the converter,
-which is why they live here rather than bloating the converter module.
+Module-level building blocks for compiling a ``ManagerWorkers`` (and a
+``ManagerWorkers`` acting as a ``Swarm`` member) into LangGraph. The
+``AgentSpecToLangGraphConverter`` methods ``_manager_workers_convert_to_langgraph``
+and ``_swarm_convert_to_langgraph`` orchestrate these helpers; the helpers
+themselves are pure functions with no dependency on the converter, which is
+why they live here rather than bloating the converter module.
 """
 
 import logging
@@ -40,6 +41,16 @@ _MANAGER_NODE_KEY = "__manager__"
 # the normalized worker node name.
 _DELEGATE_TOOL_PREFIX = "delegate_to_"
 
+# Prefix the manager's LLM uses to hand the conversation off to a sibling
+# Swarm member (only present when this ManagerWorkers is a Swarm member). The
+# suffix is the normalized sibling name; matches langgraph_swarm's convention.
+_HANDOFF_TOOL_PREFIX = "transfer_to_"
+
+# Node key for the Swarm-handoff node in the ManagerWorkers parent StateGraph.
+# Like ``_MANAGER_NODE_KEY`` it cannot collide with a normalized worker node
+# name (which never contains leading/trailing underscores).
+_HANDOFF_NODE_KEY = "__handoff__"
+
 # Keys carried on the per-delegation ``Send`` payload from the manager's
 # routing edge to a worker node, so a worker run knows which task it was
 # given and which ``tool_call_id`` its reply ToolMessage must answer. This
@@ -56,8 +67,9 @@ _WHITESPACE_RE = re.compile(r"\s+")
 def _normalize_identifier(s: str) -> str:
     """Lowercase, collapse non-alphanumerics to underscores, strip surrounding
     underscores. The single source of truth for turning a spec name into an
-    ASCII identifier, so a worker node name and the ``delegate_to_<worker>``
-    tool name addressing it always agree."""
+    ASCII identifier — worker node names and ``transfer_to_<sibling>`` tool
+    names must normalize identically, since a handoff ``goto`` is matched
+    against the normalized node name."""
     return re.sub(r"[^a-z0-9]+", "_", (s or "").lower()).strip("_")
 
 
@@ -93,12 +105,13 @@ def _messages_of(state: Any) -> List[Any]:
 
 
 def _surface_to_parent_command(state: Any) -> Any:
-    """The delegation tool's body: break out of the manager's react loop and
-    project the subgraph's messages — including the AIMessage carrying the
-    triggering tool call — onto the PARENT state, carrying **no** ``goto``
-    (routing is the parent graph's job). The ``add_messages`` reducer dedupes
-    by id, so re-surfacing existing messages is a no-op. Modelled on
-    ``langgraph_swarm.create_handoff_tool``."""
+    """The body shared by the delegation and swarm-handoff tools: break out of
+    the manager's react loop and project the subgraph's messages — including
+    the AIMessage carrying the triggering tool call — onto the PARENT state,
+    carrying **no** ``goto`` (routing is the parent graph's job). The two tools
+    differ only in name/description; this is their entire runtime behaviour.
+    The ``add_messages`` reducer dedupes by id, so re-surfacing existing
+    messages is a no-op. Modelled on ``langgraph_swarm.create_handoff_tool``."""
     from langgraph.types import Command
 
     return Command(graph=Command.PARENT, update={"messages": _messages_of(state)})
@@ -127,7 +140,7 @@ def _append_workers_roster(
 def _make_worker_delegation_tool(worker_node_name: str) -> Any:
     """Build the ``delegate_to_<worker>`` tool the manager's LLM emits to route to a
     worker. The body carries **no** ``goto`` — routing fans out one ``Send`` per
-    delegation (:func:`_route_manager_to_worker_or_end`); a ``goto`` here would
+    delegation (:func:`_route_manager_to_worker_handoff_or_end`); a ``goto`` here would
     collapse multiple same-turn delegations into one parent Command, leaving the other
     ``tool_call_id``s unanswered.
     """
@@ -162,10 +175,148 @@ def _make_worker_delegation_tool(worker_node_name: str) -> Any:
     return _delegate
 
 
-def _route_manager_to_worker_or_end(state: Dict[str, Any]) -> Any:
-    """Inspect the manager's last AIMessage and route the parent graph: one
-    ``Send`` per ``delegate_to_<worker>`` tool call, or ``END`` when the manager
-    emitted none.
+def _handoff_tool_name(destination_name: str) -> str:
+    """``transfer_to_<normalized sibling>`` — the tool name the manager's LLM
+    emits to hand off to a Swarm sibling. Uses the same
+    :func:`_normalize_identifier` as worker node names so the name is a clean
+    tool identifier; the raw destination (the Swarm node name used as the
+    handoff ``goto``) is recovered via the tool-name→destination map held by
+    the handoff node."""
+    return f"{_HANDOFF_TOOL_PREFIX}{_normalize_identifier(destination_name) or 'agent'}"
+
+
+def _make_swarm_handoff_tool(destination_name: str) -> Any:
+    """Build the ``transfer_to_<sibling>`` tool a Swarm-member ManagerWorkers' manager
+    emits to hand off to a sibling. Like the delegation tool it carries no ``goto``; the
+    parent's ``__handoff__`` node (:func:`_make_handoff_forward_node`) re-emits the
+    handoff. A plain ``langgraph_swarm.create_handoff_tool`` can't be used here: its
+    ``Command(graph=PARENT)`` would land on *this* ManagerWorkers graph — one level short
+    of the Swarm — and be dropped.
+    """
+    from typing import Annotated
+
+    from langchain_core.tools import InjectedToolCallId, tool
+    from langgraph.prebuilt import InjectedState
+    from langgraph.types import Command
+
+    tool_name = _handoff_tool_name(destination_name)
+
+    @tool(tool_name)
+    def _handoff(
+        state: Annotated[Any, InjectedState],
+        tool_call_id: Annotated[str, InjectedToolCallId],
+    ) -> Command:
+        """Hand the whole conversation off to the named agent."""
+        # id is recovered from the surfaced AIMessage by the handoff node.
+        del tool_call_id
+        return _surface_to_parent_command(state)
+
+    _handoff.description = (
+        f"Transfer the full conversation to the '{destination_name}' agent so "
+        f"it takes over the dialogue with the user. Use this when "
+        f"'{destination_name}' is better suited to continue; you will not "
+        f"regain control afterwards."
+    )
+    return _handoff
+
+
+def _make_handoff_forward_node(handoff_dest_by_tool_name: Dict[str, str]) -> Any:
+    """Build the parent-graph node that performs a Swarm handoff.
+
+    Reached (via the routing edge) when the manager's last AIMessage carries a
+    ``transfer_to_<sibling>`` tool call. It returns a
+    ``Command(goto=<sibling>, graph=Command.PARENT, update={..., active_agent})``
+    that re-emits the handoff up to the Swarm graph (mirroring what
+    ``langgraph_swarm.create_handoff_tool`` does for a plain Agent member).
+
+    Transcript validity: the ManagerWorkers graph exits via this PARENT
+    command rather than running to its own END, so its internal messages do
+    **not** merge into the shared Swarm conversation — only this command's
+    ``update`` does. We therefore forward the manager's transfer AIMessage
+    itself, followed by a ``ToolMessage`` answering every (still-unanswered)
+    tool call on it, so the Swarm sees a well-formed
+    ``AIMessage(tool_calls)`` → ``ToolMessage`` sequence — an orphan
+    ToolMessage would 400 the next member's LLM. Answering *every* call (not
+    just the transfer) keeps the sequence valid even when the manager emitted
+    delegations in the same turn; the manager's internal delegation mechanics
+    otherwise stay hidden inside the ManagerWorkers, as in a standalone run.
+
+    Returns a ``RunnableLambda`` exposing both sync (``func``) and async
+    (``afunc``) entrypoints so LangGraph can call it on either path; the body
+    is pure so the async wrapper just delegates.
+    """
+    from langchain_core.messages import ToolMessage
+    from langgraph.types import Command
+
+    from pyagentspec.adapters.langgraph._types import RunnableLambda
+
+    def _forward(state: Dict[str, Any]) -> Any:
+        messages = state.get("messages") or []
+        last = messages[-1] if messages else None
+        tool_calls = getattr(last, "tool_calls", None) or []
+        transfer_call = next(
+            (tc for tc in tool_calls if _tc_get(tc, "name") in handoff_dest_by_tool_name),
+            None,
+        )
+        if transfer_call is None:
+            # Defensive: the routing edge only sends us here on a transfer call.
+            return {"messages": []}
+        destination = handoff_dest_by_tool_name[_tc_get(transfer_call, "name")]
+        transfer_id = _tc_get(transfer_call, "id") or ""
+        already_answered = {
+            getattr(m, "tool_call_id", None) for m in messages if getattr(m, "type", None) == "tool"
+        }
+        tool_messages: List[Any] = []
+        for tc in tool_calls:
+            call_id = _tc_get(tc, "id") or ""
+            if call_id in already_answered:
+                continue
+            if call_id == transfer_id:
+                content = f"Successfully transferred to {destination}"
+            else:
+                content = f"Not executed: the conversation was handed off to " f"{destination}."
+            tool_messages.append(
+                ToolMessage(
+                    content=content,
+                    name=_tc_get(tc, "name"),
+                    tool_call_id=call_id,
+                )
+            )
+        return Command(
+            goto=destination,
+            graph=Command.PARENT,
+            # AIMessage first, then its answering ToolMessages — see docstring.
+            update={"messages": [last, *tool_messages], "active_agent": destination},
+        )
+
+    async def _forward_async(state: Dict[str, Any]) -> Any:
+        return _forward(state)
+
+    return RunnableLambda(
+        func=_forward,
+        afunc=_forward_async,
+        name="swarm_handoff",
+    )
+
+
+def _is_handoff_name(name: Any) -> bool:
+    """True if ``name`` is one of the synthetic ``transfer_to_<sibling>`` tool
+    names the manager emits to hand the conversation off to a Swarm sibling."""
+    return isinstance(name, str) and name.startswith(_HANDOFF_TOOL_PREFIX)
+
+
+def _route_manager_to_worker_handoff_or_end(state: Dict[str, Any]) -> Any:
+    """Inspect the manager's last AIMessage and route the parent graph.
+
+    Routing precedence:
+
+    * a ``transfer_to_<sibling>`` tool call → the Swarm-handoff node
+      (:func:`_make_handoff_forward_node`), which re-emits the handoff up to
+      the Swarm. Handoff transfers the *whole* conversation, so it wins over
+      delegation and routes to a single destination (only present when this
+      ManagerWorkers is a Swarm member).
+    * one or more ``delegate_to_<worker>`` tool calls → one ``Send`` per
+      delegation; otherwise → ``END``.
 
     A single manager turn may emit several ``delegate_to_<worker>`` calls; each gets its
     own ``Send`` carrying the ``task`` + ``tool_call_id``, so every call is answered
@@ -181,9 +332,12 @@ def _route_manager_to_worker_or_end(state: Dict[str, Any]) -> Any:
     last = messages[-1]
     tool_calls = getattr(last, "tool_calls", None) or []
     sends = []
+    handoff = False
     for tc in tool_calls:
         name = _tc_get(tc, "name")
-        if _is_delegate_name(name):
+        if _is_handoff_name(name):
+            handoff = True
+        elif _is_delegate_name(name):
             args = _tc_get(tc, "args") or {}
             sends.append(
                 Send(
@@ -194,6 +348,10 @@ def _route_manager_to_worker_or_end(state: Dict[str, Any]) -> Any:
                     },
                 )
             )
+    # Swarm handoff wins: it hands the whole conversation to a sibling, so any
+    # delegations in the same turn are answered-and-dropped by the handoff node.
+    if handoff:
+        return _HANDOFF_NODE_KEY
     return sends or langgraph_graph.END
 
 
