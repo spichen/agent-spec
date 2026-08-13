@@ -696,16 +696,38 @@ class AgentNodeExecutor(NodeExecutor):
         outputs = extract_outputs_from_invoke_result(result, self.node.outputs or [])
         return outputs, NodeExecutionDetails()
 
+    def _invoke_config(self) -> RunnableConfig:
+        """Config to run the inner agent with: the current pregel task's config.
+
+        The conversion-time ``self.config`` carries none of the flow task's
+        ``__pregel_*`` context, so invoking the inner agent with it runs the
+        agent as a standalone root graph: an ``interrupt()`` raised inside it
+        (a ClientTool, a requires_confirmation tool) is absorbed into that
+        root run's own state, ``invoke`` returns with ``__interrupt__``, and
+        the flow carries on as if the agent had answered. With the live task
+        config the agent runs as a true subgraph of the flow — the interrupt
+        propagates to the flow's run, and a ``Command(resume=...)`` replays
+        back into the agent.
+        """
+        from langgraph.config import get_config
+
+        try:
+            return get_config()
+        except RuntimeError:
+            # Not inside a pregel task (e.g. an executor driven directly in
+            # tests): keep the conversion-time config.
+            return self.config
+
     def _execute(self, inputs: Dict[str, Any], messages: Messages) -> ExecuteOutput:
         node_inputs = dict(inputs)
         agent, prepared_inputs = self._prepare_agent_and_inputs(inputs, messages)
-        result = agent.invoke(prepared_inputs, self.config)
+        result = agent.invoke(prepared_inputs, self._invoke_config())
         return self._format_agent_result(result, node_inputs)
 
     async def _aexecute(self, inputs: Dict[str, Any], messages: Messages) -> ExecuteOutput:
         node_inputs = dict(inputs)
         agent, prepared_inputs = self._prepare_agent_and_inputs(inputs, messages)
-        result = await agent.ainvoke(prepared_inputs, self.config)
+        result = await agent.ainvoke(prepared_inputs, self._invoke_config())
         return self._format_agent_result(result, node_inputs)
 
 
