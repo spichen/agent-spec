@@ -283,6 +283,161 @@ def test_output_not_shadowed_by_same_named_input() -> None:
     assert result["outputs"]["output"] == french_joke
 
 
+def _build_client_tool_flow() -> Flow:
+    from pyagentspec.llms.openaicompatibleconfig import OpenAiCompatibleConfig
+    from pyagentspec.tools import ClientTool
+
+    client_tool = ClientTool(
+        name="ask_user",
+        description="Ask the user a question",
+        inputs=[StringProperty(title="question")],
+    )
+    agent = Agent(
+        name="agent",
+        llm_config=OpenAiCompatibleConfig(name="agent_llm", model_id="fake", url="null"),
+        system_prompt="You are helpful.",
+        tools=[client_tool],
+    )
+    agent_node = AgentNode(name="agent_node", agent=agent)
+    start_node = StartNode(name="start")
+    end_node = EndNode(name="end")
+    return Flow(
+        name="flow",
+        start_node=start_node,
+        nodes=[start_node, agent_node, end_node],
+        control_flow_connections=[
+            ControlFlowEdge(name="start_to_node", from_node=start_node, to_node=agent_node),
+            ControlFlowEdge(name="node_to_end", from_node=agent_node, to_node=end_node),
+        ],
+        data_flow_connections=[],
+    )
+
+
+def _client_tool_fake_model():
+    from langchain_core.language_models.fake_chat_models import (
+        FakeMessagesListChatModel,
+    )
+    from langchain_core.messages import AIMessage
+    from langchain_openai import ChatOpenAI
+
+    class _FakeModel(FakeMessagesListChatModel, ChatOpenAI):
+        async def _agenerate(self, messages, stop=None, run_manager=None, **kwargs):
+            # ChatOpenAI's _agenerate would win the MRO and call the real API;
+            # route the async path through the fake sync implementation.
+            return self._generate(messages, stop=stop, **kwargs)
+
+    return _FakeModel(
+        responses=[
+            AIMessage(
+                content="",
+                tool_calls=[
+                    {
+                        "name": "ask_user",
+                        "args": {"question": "capital of India?"},
+                        "id": "call_1",
+                        "type": "tool_call",
+                    }
+                ],
+            ),
+            AIMessage(content="You answered: New Delhi"),
+        ]
+    )
+
+
+def _client_tool_flow_patches(fake_llm):
+    from unittest.mock import patch
+
+    from langchain_core.language_models.fake_chat_models import (
+        FakeMessagesListChatModel,
+    )
+
+    from pyagentspec.adapters.langgraph._langgraphconverter import (
+        AgentSpecToLangGraphConverter,
+    )
+
+    return (
+        patch.object(
+            AgentSpecToLangGraphConverter,
+            "_llm_convert_to_langgraph",
+            autospec=True,
+            side_effect=lambda self_obj, llm_config, *a, **k: fake_llm,
+        ),
+        patch.object(
+            FakeMessagesListChatModel,
+            "bind_tools",
+            new=lambda self_obj, *a, **k: self_obj,
+        ),
+    )
+
+
+def test_agentnode_client_tool_interrupt_propagates_and_resumes() -> None:
+    """A ClientTool interrupt raised inside an AgentNode's agent must pause the
+    flow, and a resume must replay into the agent.
+
+    Regression: the executor invoked the inner agent with the conversion-time
+    ``self.config`` (no ``__pregel_*`` task context), so the agent ran as a
+    standalone root graph — the interrupt was absorbed into that run's own
+    state, the node formatted the tool-call message as its output, and the
+    flow carried on as if the agent had answered.
+    """
+    from langchain_core.runnables import RunnableConfig
+    from langgraph.checkpoint.memory import MemorySaver
+    from langgraph.types import Command
+
+    from pyagentspec.adapters.langgraph import AgentSpecLoader
+
+    fake_llm = _client_tool_fake_model()
+    llm_patch, bind_patch = _client_tool_flow_patches(fake_llm)
+    with llm_patch, bind_patch:
+        compiled = AgentSpecLoader(tool_registry={}, checkpointer=MemorySaver()).load_component(
+            _build_client_tool_flow()
+        )
+        config = RunnableConfig({"configurable": {"thread_id": "agentnode-client-tool"}})
+        result = compiled.invoke(
+            {"inputs": {}, "messages": [{"role": "user", "content": "ask me a question"}]},
+            config=config,
+        )
+        assert "__interrupt__" in result
+        interrupt_value = result["__interrupt__"][0].value
+        assert interrupt_value["type"] == "client_tool_request"
+        assert interrupt_value["name"] == "ask_user"
+        assert interrupt_value["inputs"]["kwargs"] == {"question": "capital of India?"}
+
+        resumed = compiled.invoke(Command(resume="New Delhi"), config=config)
+
+    assert "__interrupt__" not in resumed
+    assert resumed["messages"][-1].content == "You answered: New Delhi"
+
+
+@pytest.mark.anyio
+async def test_agentnode_client_tool_interrupt_propagates_and_resumes_async() -> None:
+    """Async variant of the ClientTool interrupt round-trip through an AgentNode."""
+    from langchain_core.runnables import RunnableConfig
+    from langgraph.checkpoint.memory import MemorySaver
+    from langgraph.types import Command
+
+    from pyagentspec.adapters.langgraph import AgentSpecLoader
+
+    fake_llm = _client_tool_fake_model()
+    llm_patch, bind_patch = _client_tool_flow_patches(fake_llm)
+    with llm_patch, bind_patch:
+        compiled = AgentSpecLoader(tool_registry={}, checkpointer=MemorySaver()).load_component(
+            _build_client_tool_flow()
+        )
+        config = RunnableConfig({"configurable": {"thread_id": "agentnode-client-tool-async"}})
+        result = await compiled.ainvoke(
+            {"inputs": {}, "messages": [{"role": "user", "content": "ask me a question"}]},
+            config=config,
+        )
+        assert "__interrupt__" in result
+        assert result["__interrupt__"][0].value["type"] == "client_tool_request"
+
+        resumed = await compiled.ainvoke(Command(resume="New Delhi"), config=config)
+
+    assert "__interrupt__" not in resumed
+    assert resumed["messages"][-1].content == "You answered: New Delhi"
+
+
 @pytest.mark.anyio
 @retry_test(max_attempts=3, wait_between_tries=2)
 async def test_agentnode_can_be_executed_async(agent_flow: Flow) -> None:
