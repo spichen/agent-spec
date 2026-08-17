@@ -9,7 +9,7 @@
 from typing import Any, Dict, List, Mapping, Tuple, Type, cast
 
 from pydantic import BaseModel, ValidationError
-from pydantic_core import InitErrorDetails
+from pydantic_core import InitErrorDetails, PydanticCustomError
 
 from pyagentspec.component import Component
 from pyagentspec.serialization.deserializationcontext import DeserializationContext
@@ -55,19 +55,34 @@ class PydanticComponentDeserializationPlugin(ComponentDeserializationPlugin):
             deserialization_context=deserialization_context,
         )
         if len(validation_errors) > 0:
-            line_errors = [
-                InitErrorDetails(
-                    type=e.type,
-                    loc=e.loc,
-                    input=(),
-                )
-                for e in validation_errors
-            ]
             raise ValidationError.from_exception_data(
                 title=component.__class__.__name__,
-                line_errors=line_errors,
+                line_errors=[self._to_line_error(e) for e in validation_errors],
             )
         return cast(Component, component)
+
+    @staticmethod
+    def _to_line_error(e: PyAgentSpecErrorDetails) -> InitErrorDetails:
+        """Rebuild a ``pydantic_core`` line error that surfaces the real cause.
+
+        A bare ``InitErrorDetails(type=e.type, ...)`` makes
+        ``ValidationError.from_exception_data`` re-derive each builtin type's
+        required ctx (``value_error`` needs ``{"error": <exc>}``; ``gt`` needs
+        ``gt``; …). The previous code supplied none, so a collected
+        ``value_error`` — any component ``model_validator`` that raises
+        ``ValueError`` — made ``from_exception_data`` itself raise
+        ``TypeError: 'error' required in context``, MASKING the real failure.
+
+        A ``PydanticCustomError`` carries the message directly (rendered
+        verbatim — no ctx, no template interpolation), so it reconstructs any
+        collected error, of any type, without the per-type ctx dance and
+        preserves both the original ``type`` and ``msg``.
+        """
+        return InitErrorDetails(
+            type=PydanticCustomError(e.type, e.msg),
+            loc=e.loc,
+            input=(),
+        )
 
     def _partial_deserialize(
         self, serialized_component: Dict[str, Any], deserialization_context: DeserializationContext
