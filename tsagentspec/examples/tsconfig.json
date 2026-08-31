@@ -13,7 +13,8 @@
     "resolveJsonModule": true,
     "types": ["node"],
     "paths": {
-      "agentspec": ["../src/index.ts"]
+      "agentspec": ["../src/index.ts"],
+      "agentspec/adapters/langgraph": ["../src/adapters/langgraph/index.ts"]
     },
     "noEmit": true
   },

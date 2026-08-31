@@ -1,7 +1,10 @@
 import { defineConfig } from "tsup";
 
 export default defineConfig({
-  entry: ["src/index.ts"],
+  entry: {
+    index: "src/index.ts",
+    "adapters/langgraph/index": "src/adapters/langgraph/index.ts",
+  },
   format: ["cjs", "esm"],
   dts: true,
   splitting: false,

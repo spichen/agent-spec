@@ -41,6 +41,95 @@ To consume it from another local project, add it as a local path dependency in t
 
 See the [examples](./examples/README.md) directory.
 
+## LangGraph adapter
+
+The `agentspec/adapters/langgraph` subpath converts Agent Spec configurations into runnable [LangGraph JS](https://langchain-ai.github.io/langgraphjs/) objects and back, mirroring the Python `pyagentspec.adapters.langgraph` adapter.
+
+### Installation
+
+The LangChain packages are optional peer dependencies of this SDK; install the ones your configurations need:
+
+| Packages | Needed for |
+|---|---|
+| `langchain`, `@langchain/langgraph`, `@langchain/core` | always (loader/exporter core) |
+| `@langchain/openai` | `OpenAiConfig`, `OpenAiCompatibleConfig`, `VllmConfig` |
+| `@langchain/ollama` | `OllamaConfig` |
+| `@langchain/mcp-adapters` | `MCPTool`, `MCPToolBox` |
+| `@langchain/langgraph-swarm` | `Swarm` |
+
+```bash
+npm install langchain @langchain/langgraph @langchain/core
+# plus, depending on the components your specs use:
+npm install @langchain/openai @langchain/ollama @langchain/mcp-adapters @langchain/langgraph-swarm
+```
+
+### Quickstart
+
+Load an Agent Spec configuration and invoke the resulting LangGraph object:
+
+```ts
+import { AgentSpecLoader } from "agentspec/adapters/langgraph";
+
+const loader = new AgentSpecLoader({
+  toolRegistry: {
+    // ServerTool implementations, keyed by tool name.
+    get_weather: (input: unknown) =>
+      `It is sunny in ${(input as { city: string }).city}.`,
+  },
+});
+
+const agent = (await loader.loadYaml(yamlText)) as {
+  invoke(input: unknown): Promise<Record<string, unknown>>;
+};
+const result = await agent.invoke({
+  messages: [{ role: "user", content: "What is the weather in Agadir?" }],
+});
+```
+
+All load methods (`loadYaml`, `loadJson`, `loadDict`, `loadComponent`) are async. `AgentSpecLoader` also accepts a `checkpointer` (required for `ClientTool` and `requiresConfirmation` interrupts), a `config` (RunnableConfig), agent `middleware`, deserialization `plugins`, and an `allowedComponents`/`blockedComponents` load policy (`StdioTransport` is blocked by default).
+
+### Exporter
+
+Convert LangGraph objects back into Agent Spec configurations:
+
+```ts
+import { AgentSpecExporter } from "agentspec/adapters/langgraph";
+
+const exporter = new AgentSpecExporter();
+const yaml = exporter.toYaml(compiledGraph) as string; // also: toJson, toDict, toComponent
+```
+
+`createAgent(...)` agents export as `Agent`, compiled `@langchain/langgraph-swarm` graphs as `Swarm`, LangChain structured tools as `ServerTool`, `ChatOpenAI`/`ChatOllama` models as LLM configs, and any other `StateGraph` (compiled or not) as a `Flow`.
+
+### Supported components
+
+| Agent Spec | LangGraph runtime |
+|---|---|
+| `Agent` | `createAgent` react agent (structured outputs via the tool strategy) |
+| `Swarm` | `@langchain/langgraph-swarm` `createSwarm` with handoff tools |
+| `ManagerWorkers` | hierarchical `StateGraph` (`__manager__` node plus delegation tools) |
+| `Flow` | `StateGraph` supporting `StartNode`, `EndNode`, `LlmNode`, `ToolNode`, `AgentNode`, `BranchingNode`, `ApiNode`, `FlowNode`, `CatchExceptionNode`, `InputMessageNode`, `OutputMessageNode`, `MapNode` |
+| `ServerTool` | tool implementation resolved from the `toolRegistry` |
+| `ClientTool` | LangGraph interrupt (`client_tool_request` payload) |
+| `RemoteTool` | `fetch`-based HTTP tool |
+| `MCPTool`, `MCPToolBox` | `@langchain/mcp-adapters` tools (SSE and Streamable HTTP transports) |
+| `OpenAiConfig`, `OpenAiCompatibleConfig`, `VllmConfig` | `ChatOpenAI` |
+| `OllamaConfig` | `ChatOllama` |
+
+`ParallelMapNode` and `ParallelFlowNode` are not supported and raise an error.
+
+### Divergences from the Python adapter
+
+- The loader and converter APIs are async (`Promise`-based); Python is sync-first.
+- The TypeScript SDK has no `RetryPolicy` component yet, so `RemoteTool` performs a single `fetch` without the Python retry machinery. `RemoteTool`/`ApiNode` requests do not follow redirects and time out after a fixed 5 seconds (`DEFAULT_HTTP_REQUEST_TIMEOUT_MS`), matching httpx's defaults; there is no per-tool timeout override yet.
+- When exporting a LangGraph graph whose conditional edge collides with a real node literally named `condition`, the synthetic conditional/branching node names are suffixed (`condition_1`, ...) so the real node keeps its edges; the Python-style names are used otherwise.
+- The TypeScript SDK has no `urlAllowList` field on `RemoteTool`/`ApiNode` yet, so URL allow-list enforcement is not available (the warning about templated URLs without an allow list still fires).
+- `OciGenAiConfig` is not supported (no `langchain-oci` package for JS).
+- The MCP mTLS transports (`SSEmTLSTransport`, `StreamableHTTPmTLSTransport`) are not supported.
+- Tracing is a no-op seam only; no execution spans or events are emitted yet.
+
+See [examples/09-langgraph-adapter.ts](./examples/09-langgraph-adapter.ts) for a complete offline round trip.
+
 ## License
 
 UPL-1.0 or Apache-2.0 — see [LICENSE-UPL.txt](../LICENSE-UPL.txt) and [LICENSE-APACHE.txt](../LICENSE-APACHE.txt).
