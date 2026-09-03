@@ -255,11 +255,12 @@ function normalizeUnionTypes(
   schema: JsonSchemaValue,
 ): JsonSchemaValue[] {
   const jsonSchemaType = schema["type"] ?? [];
-  const types: string[] = typeof jsonSchemaType === "string"
-    ? [jsonSchemaType]
-    : Array.isArray(jsonSchemaType)
-      ? (jsonSchemaType as string[])
-      : [];
+  // Python parity: a non-array `type` is wrapped as-is — even a malformed
+  // non-string value ends up in the union as `{ type: <value> }` instead of
+  // being silently dropped (mirrors `[json_schema_type]` in property.py).
+  const types: unknown[] = Array.isArray(jsonSchemaType)
+    ? (jsonSchemaType as unknown[])
+    : [jsonSchemaType];
 
   const allTypes: JsonSchemaValue[] = [
     ...((schema["anyOf"] as JsonSchemaValue[]) ?? []),
@@ -333,12 +334,17 @@ export function jsonSchemasHaveSameType(
   if ("properties" in a || "properties" in b) {
     const aProps = (a["properties"] ?? {}) as Record<string, JsonSchemaValue>;
     const bProps = (b["properties"] ?? {}) as Record<string, JsonSchemaValue>;
+    // Element-wise comparison of the sorted key sets (Python's
+    // `dict.keys() != dict.keys()`): joining with a separator could collide
+    // on property names containing that separator.
+    const aKeys = Object.keys(aProps).sort();
+    const bKeys = Object.keys(bProps).sort();
     if (
-      Object.keys(aProps).sort().join(",") !==
-      Object.keys(bProps).sort().join(",")
+      aKeys.length !== bKeys.length ||
+      aKeys.some((key, index) => key !== bKeys[index])
     )
       return false;
-    for (const key of Object.keys(aProps)) {
+    for (const key of aKeys) {
       if (!jsonSchemasHaveSameType(aProps[key]!, bProps[key]!)) return false;
     }
   }

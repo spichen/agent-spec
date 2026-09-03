@@ -250,6 +250,30 @@ describe("convertLlmConfig for OllamaConfig", () => {
     expect(model.numPredict).toBeUndefined();
     expect(model.topP).toBeUndefined();
   });
+
+  it("does not forward extra generation fields", async () => {
+    // Only temperature / maxTokens / topP are supported; extra fields in the
+    // (passthrough) generation config must not reach the constructed model.
+    const model = (await convertLlmConfig(
+      createOllamaConfig({
+        name: "oll",
+        modelId: "llama3.1",
+        url: "http://localhost:11434",
+        defaultGenerationParameters: {
+          temperature: 0.2,
+          maxTokens: 128,
+          topP: 0.8,
+          presencePenalty: 1.0,
+        } as LlmGenerationConfig,
+      }),
+    )) as ChatOllama;
+    expect(model.temperature).toBe(0.2);
+    expect(model.numPredict).toBe(128);
+    expect(model.topP).toBe(0.8);
+    expect(
+      (model as unknown as { presencePenalty?: number }).presencePenalty,
+    ).toBeUndefined();
+  });
 });
 
 describe("convertLlmConfig rejections", () => {

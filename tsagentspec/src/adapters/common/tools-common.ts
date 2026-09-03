@@ -132,11 +132,22 @@ export interface TemplatedHttpRequestSpec {
  * non-empty data is not sent for those methods and the flag is returned for
  * the caller to surface (the ApiNode executor warns; the RemoteTool path
  * keeps Python's silence).
+ *
+ * `options.isRecord` decides which rendered data values count as a record for
+ * the urlencoded-form encoding and the GET/HEAD empty-body check. It defaults
+ * to the strict `isPlainRecord` (the RemoteTool path's historical guard); the
+ * ApiNode executor passes the loose `isRecordLike`, preserving each caller's
+ * pre-unification behavior when a full `{{placeholder}}` substitution renders
+ * `data` to a non-plain object such as a class instance.
  */
 export function buildTemplatedHttpRequest(
   spec: TemplatedHttpRequestSpec,
   inputs: Record<string, unknown>,
+  options: {
+    isRecord?: (value: unknown) => value is Record<string, unknown>;
+  } = {},
 ): { url: string; init: RequestInit; bodyDropped: boolean } {
+  const isRecord = options.isRecord ?? isPlainRecord;
   const renderedData = renderNestedObjectTemplate(spec.data, inputs);
   const renderedHeaders = renderRecord(spec.headers, inputs);
   const renderedQueryParams = renderRecord(spec.queryParams, inputs);
@@ -168,11 +179,11 @@ export function buildTemplatedHttpRequest(
     renderedData !== undefined &&
     renderedData !== null &&
     renderedData !== "" &&
-    !(isPlainRecord(renderedData) && Object.keys(renderedData).length === 0);
+    !(isRecord(renderedData) && Object.keys(renderedData).length === 0);
 
   let body: string | URLSearchParams | Uint8Array | undefined;
   if (methodAllowsBody) {
-    if (expectUrlencodedFormData && isPlainRecord(renderedData)) {
+    if (expectUrlencodedFormData && isRecord(renderedData)) {
       const form = new URLSearchParams();
       for (const [key, value] of Object.entries(renderedData)) {
         form.append(

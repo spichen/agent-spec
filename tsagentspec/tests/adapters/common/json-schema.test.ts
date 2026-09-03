@@ -92,6 +92,35 @@ describe("jsonSchemasHaveSameType", () => {
     ).toBe(false);
   });
 
+  it("distinguishes property names containing the sort separator", () => {
+    // Regression pin: comparing joined key strings would collide on names
+    // containing a comma ({"a,b"} vs {"a","b"}) and then throw looking up
+    // the missing key; element-wise comparison returns false cleanly.
+    expect(
+      jsonSchemasHaveSameType(
+        { type: "object", properties: { "a,b": { type: "string" } } },
+        {
+          type: "object",
+          properties: { a: { type: "string" }, b: { type: "string" } },
+        },
+      ),
+    ).toBe(false);
+  });
+
+  it("keeps a malformed non-string type in the normalized union (Python parity)", () => {
+    // Python wraps a non-list `type` as-is, so {anyOf, type: 5} normalizes
+    // to [..., {type: 5}] and compares unequal to the plain anyOf schema
+    // instead of silently dropping the malformed member.
+    const malformed: JsonSchemaValue = {
+      anyOf: [{ type: "string" }],
+      type: 5,
+    };
+    expect(
+      jsonSchemasHaveSameType(malformed, { anyOf: [{ type: "string" }] }),
+    ).toBe(false);
+    expect(jsonSchemasHaveSameType(malformed, malformed)).toBe(true);
+  });
+
   it("compares additionalProperties strictly when boolean", () => {
     expect(
       jsonSchemasHaveSameType(

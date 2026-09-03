@@ -23,6 +23,7 @@ import type { ApiNode } from "../../../flows/index.js";
 import {
   buildTemplatedHttpRequest,
   fetchWithAdapterDefaults,
+  isRecordLike,
   maybeWarnAboutUnrestrictedTemplatedUrl,
 } from "../../common/index.js";
 import type { ExecuteOutput, NodeOutputs } from "../types.js";
@@ -50,9 +51,15 @@ export class ApiNodeExecutor extends NodeExecutor<ApiNode> {
     inputs: NodeOutputs,
     _messages: BaseMessage[],
   ): Promise<ExecuteOutput> {
+    // The loose record guard preserves this executor's historical semantics:
+    // when a full `{{placeholder}}` substitution renders `data` to a
+    // non-plain object (class instance, Map), it still counts as a record
+    // for the urlencoded-form encoding and the GET/HEAD empty-body check
+    // (the RemoteTool path keeps the strict default).
     const { url, init, bodyDropped } = buildTemplatedHttpRequest(
       this.node,
       inputs,
+      { isRecord: isRecordLike },
     );
     if (bodyDropped) {
       // Forced divergence from Python: warn instead of silently dropping.
