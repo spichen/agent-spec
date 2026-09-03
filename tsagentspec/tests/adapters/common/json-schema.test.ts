@@ -1,8 +1,9 @@
 /**
  * Tests for the shared JSON-schema helpers.
  *
- * `jsonSchemasHaveSameType` ports
- * `pyagentspec.property.json_schemas_have_same_type`;
+ * `jsonSchemasHaveSameType` is the SDK's canonical port of
+ * `pyagentspec.property.json_schemas_have_same_type` (in `src/property.ts`,
+ * re-exported through the adapter common barrel);
  * `buildJsonSchemaFromProperties` builds LangChain tool argument schemas from
  * AgentSpec properties (defaults excluded from `required`, mirroring the
  * Python generated pydantic models).
@@ -10,10 +11,8 @@
 import { describe, expect, it } from "vitest";
 import type { JsonSchemaValue } from "../../../src/index.js";
 import { integerProperty, stringProperty } from "../../../src/index.js";
-import {
-  buildJsonSchemaFromProperties,
-  jsonSchemasHaveSameType,
-} from "../../../src/adapters/common/json-schema.js";
+import { jsonSchemasHaveSameType } from "../../../src/property.js";
+import { buildJsonSchemaFromProperties } from "../../../src/adapters/common/json-schema.js";
 
 describe("jsonSchemasHaveSameType", () => {
   it("matches identical basic types and rejects different ones", () => {

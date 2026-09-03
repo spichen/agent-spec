@@ -23,10 +23,8 @@ export {
   type ComponentPolicyEntry,
   type ComponentPolicyInput,
 } from "./component-policy.js";
-export {
-  jsonSchemasHaveSameType,
-  buildJsonSchemaFromProperties,
-} from "./json-schema.js";
+export { jsonSchemasHaveSameType } from "../../property.js";
+export { buildJsonSchemaFromProperties } from "./json-schema.js";
 export {
   DEFAULT_HTTP_REQUEST_TIMEOUT_MS,
   buildTemplatedHttpRequest,

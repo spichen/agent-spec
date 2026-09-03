@@ -410,7 +410,10 @@ export async function compileManagerWorkers(
       : {}),
     name: managerWorkers.name,
   });
-  return patchWithExecutionSpan(compiledGraph);
+  return patchWithExecutionSpan(compiledGraph, {
+    kind: "manager-workers",
+    component: managerWorkers,
+  });
 }
 
 /**

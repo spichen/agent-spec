@@ -58,9 +58,12 @@ export abstract class AdapterAgnosticAgentSpecExporter {
     runtimeComponent: unknown,
     options?: ExportOptions,
   ): string | [string, string] {
-    return this._export("json", runtimeComponent, options) as
-      | string
-      | [string, string];
+    return this._export(
+      (serializer, agentspecAssistant, serializerOptions) =>
+        serializer.toJson(agentspecAssistant, serializerOptions),
+      runtimeComponent,
+      options,
+    );
   }
 
   /**
@@ -72,9 +75,12 @@ export abstract class AdapterAgnosticAgentSpecExporter {
     runtimeComponent: unknown,
     options?: ExportOptions,
   ): string | [string, string] {
-    return this._export("yaml", runtimeComponent, options) as
-      | string
-      | [string, string];
+    return this._export(
+      (serializer, agentspecAssistant, serializerOptions) =>
+        serializer.toYaml(agentspecAssistant, serializerOptions),
+      runtimeComponent,
+      options,
+    );
   }
 
   /**
@@ -86,9 +92,26 @@ export abstract class AdapterAgnosticAgentSpecExporter {
     runtimeComponent: unknown,
     options?: ExportOptions,
   ): ExportedDict | [ExportedDict, ExportedDict] {
-    return this._export("dict", runtimeComponent, options) as
-      | ExportedDict
-      | [ExportedDict, ExportedDict];
+    return this._export(
+      (
+        serializer,
+        agentspecAssistant,
+        serializerOptions,
+      ): ExportedDict | [ExportedDict, ExportedDict] => {
+        // The TS AgentSpecSerializer has no public toDict, so the dictionary
+        // form is derived from the JSON serialization.
+        const json = serializer.toJson(agentspecAssistant, serializerOptions);
+        if (Array.isArray(json)) {
+          return [
+            JSON.parse(json[0]) as ExportedDict,
+            JSON.parse(json[1]) as ExportedDict,
+          ];
+        }
+        return JSON.parse(json) as ExportedDict;
+      },
+      runtimeComponent,
+      options,
+    );
   }
 
   /**
@@ -100,19 +123,22 @@ export abstract class AdapterAgnosticAgentSpecExporter {
   }
 
   /**
-   * Common implementation of the export methods. The returned type depends on
-   * the type of exporter.
+   * Common implementation of the export methods. Each public method passes
+   * the closure that serializes the converted component to its output form.
    */
-  protected _export(
-    exporter: "json" | "yaml" | "dict",
+  protected _export<SerializedT>(
+    serialize: (
+      serializer: AgentSpecSerializer,
+      agentspecAssistant: ComponentBase,
+      serializerOptions: {
+        agentspecVersion?: AgentSpecVersion;
+        disaggregatedComponents?: DisaggregatedComponentsConfig;
+        exportDisaggregatedComponents: boolean;
+      },
+    ) => SerializedT,
     runtimeComponent: unknown,
     options?: ExportOptions,
-  ): string | [string, string] | ExportedDict | [ExportedDict, ExportedDict] {
-    if (exporter !== "json" && exporter !== "yaml" && exporter !== "dict") {
-      throw new Error(
-        `Unsupported exporter type: \`${String(exporter)}\`. Expected \`dict\`, \`json\`, or \`yaml\`.`,
-      );
-    }
+  ): SerializedT {
     const serializer = new AgentSpecSerializer(this.plugins);
 
     const [convertedDisagComponents, referencedComponents] =
@@ -129,23 +155,7 @@ export abstract class AdapterAgnosticAgentSpecExporter {
       exportDisaggregatedComponents:
         options?.exportDisaggregatedComponents ?? false,
     };
-
-    if (exporter === "yaml") {
-      return serializer.toYaml(agentspecAssistant, serializerOptions);
-    }
-    const json = serializer.toJson(agentspecAssistant, serializerOptions);
-    if (exporter === "json") {
-      return json;
-    }
-    // "dict": the TS AgentSpecSerializer has no public toDict, so the
-    // dictionary form is derived from the JSON serialization.
-    if (Array.isArray(json)) {
-      return [
-        JSON.parse(json[0]) as ExportedDict,
-        JSON.parse(json[1]) as ExportedDict,
-      ];
-    }
-    return JSON.parse(json) as ExportedDict;
+    return serialize(serializer, agentspecAssistant, serializerOptions);
   }
 
   /**

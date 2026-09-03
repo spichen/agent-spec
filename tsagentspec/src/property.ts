@@ -248,6 +248,9 @@ export function propertyFromJsonSchema(jsonSchema: JsonSchemaValue): Property {
 
 // --- Comparison helpers ---
 
+// Mirrors pyagentspec/property.py MAX_JSON_SCHEMA_UNION_TYPE_ALLOWED_LENGTH.
+const MAX_JSON_SCHEMA_UNION_TYPE_ALLOWED_LENGTH = 100;
+
 function normalizeUnionTypes(
   schema: JsonSchemaValue,
 ): JsonSchemaValue[] {
@@ -276,10 +279,18 @@ function normalizeUnionTypes(
     }
   }
 
+  if (allTypes.length > MAX_JSON_SCHEMA_UNION_TYPE_ALLOWED_LENGTH) {
+    throw new Error(
+      `The schema is the union of more than ${MAX_JSON_SCHEMA_UNION_TYPE_ALLOWED_LENGTH}` +
+        " types. This is not supported. Please consider simplifying the type definition or" +
+        " using 'Any'.",
+    );
+  }
   return allTypes;
 }
 
-function jsonSchemasHaveSameType(
+/** Check if the two schemas define the same type. */
+export function jsonSchemasHaveSameType(
   a: JsonSchemaValue,
   b: JsonSchemaValue,
 ): boolean {

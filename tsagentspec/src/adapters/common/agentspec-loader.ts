@@ -102,7 +102,11 @@ export abstract class AdapterAgnosticAgentSpecLoader {
     serializedAssistant: string,
     options?: LoadOptions,
   ): Promise<unknown> {
-    return this._load("yaml", serializedAssistant, options);
+    return this._load(
+      (deserializer, deserializeOptions) =>
+        deserializer.fromYaml(serializedAssistant, deserializeOptions),
+      options,
+    );
   }
 
   /**
@@ -113,7 +117,11 @@ export abstract class AdapterAgnosticAgentSpecLoader {
     serializedAssistant: string,
     options?: LoadOptions,
   ): Promise<unknown> {
-    return this._load("json", serializedAssistant, options);
+    return this._load(
+      (deserializer, deserializeOptions) =>
+        deserializer.fromJson(serializedAssistant, deserializeOptions),
+      options,
+    );
   }
 
   /**
@@ -124,7 +132,14 @@ export abstract class AdapterAgnosticAgentSpecLoader {
     serializedAssistant: Record<string, unknown>,
     options?: LoadOptions,
   ): Promise<unknown> {
-    return this._load("dict", serializedAssistant, options);
+    // The TS AgentSpecDeserializer has no public dict entry point; round-trip
+    // through JSON.
+    const json = JSON.stringify(serializedAssistant);
+    return this._load(
+      (deserializer, deserializeOptions) =>
+        deserializer.fromJson(json, deserializeOptions),
+      options,
+    );
   }
 
   /**
@@ -173,34 +188,21 @@ export abstract class AdapterAgnosticAgentSpecLoader {
     return convertedRegistry;
   }
 
-  /** Common implementation of the load methods. */
+  /**
+   * Common implementation of the load methods. Each public method passes the
+   * closure that runs its deserializer entry point.
+   */
   protected async _load(
-    loader: "yaml" | "json" | "dict",
-    serializedAssistant: string | Record<string, unknown>,
+    deserialize: (
+      deserializer: AgentSpecDeserializer,
+      deserializeOptions: {
+        componentsRegistry?: ComponentsRegistry;
+        importOnlyReferencedComponents?: boolean;
+      },
+    ) => ComponentBase | Record<string, ComponentBase>,
     options?: LoadOptions,
   ): Promise<unknown> {
     const deserializer = new AgentSpecDeserializer(this.plugins);
-    let deserialize: (deserializeOptions: {
-      componentsRegistry?: ComponentsRegistry;
-      importOnlyReferencedComponents?: boolean;
-    }) => ComponentBase | Record<string, ComponentBase>;
-    if (loader === "yaml") {
-      deserialize = (deserializeOptions) =>
-        deserializer.fromYaml(serializedAssistant as string, deserializeOptions);
-    } else if (loader === "json") {
-      deserialize = (deserializeOptions) =>
-        deserializer.fromJson(serializedAssistant as string, deserializeOptions);
-    } else if (loader === "dict") {
-      // The TS AgentSpecDeserializer has no public dict entry point;
-      // round-trip through JSON.
-      const json = JSON.stringify(serializedAssistant);
-      deserialize = (deserializeOptions) =>
-        deserializer.fromJson(json, deserializeOptions);
-    } else {
-      throw new Error(
-        `Unsupported loader type: \`${String(loader)}\`. Expected \`dict\`, \`json\`, or \`yaml\`.`,
-      );
-    }
 
     const convertedRegistry =
       options?.componentsRegistry !== undefined
@@ -209,7 +211,7 @@ export abstract class AdapterAgnosticAgentSpecLoader {
 
     if (options?.importOnlyReferencedComponents) {
       // Loading the disaggregated components
-      const referencedComponentsDict = deserialize({
+      const referencedComponentsDict = deserialize(deserializer, {
         componentsRegistry: convertedRegistry,
         importOnlyReferencedComponents: true,
       }) as Record<string, ComponentBase>;
@@ -223,7 +225,7 @@ export abstract class AdapterAgnosticAgentSpecLoader {
       return runtimeComponents;
     }
 
-    const agentspecComponent = deserialize({
+    const agentspecComponent = deserialize(deserializer, {
       componentsRegistry: convertedRegistry,
       importOnlyReferencedComponents: false,
     }) as ComponentBase;

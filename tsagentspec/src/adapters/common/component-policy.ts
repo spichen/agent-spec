@@ -11,9 +11,20 @@
  * known concrete type nor a group match only that exact serialized
  * componentType (distance 0), like unresolved names in Python.
  */
+import { AgenticComponentUnion } from "../../agents/index.js";
 import type { ComponentBase } from "../../component.js";
+import { NodeUnion } from "../../flows/nodes/index.js";
+import { LlmConfigUnion } from "../../llms/index.js";
+import { OciClientConfigUnion } from "../../llms/oci-client-config.js";
+import { ClientTransportUnion } from "../../mcp/client-transport.js";
 import { getChildrenFromFieldValue } from "../../serialization/referencing.js";
 import { OPAQUE_FIELDS } from "../../serialization/types.js";
+import { ToolUnion } from "../../tools/index.js";
+import { ToolBoxUnion } from "../../tools/toolbox.js";
+import {
+  MessageTransformUnion,
+  SupportedDatastoresSchema,
+} from "../../transforms/message-transform.js";
 
 /** A single policy entry: a concrete or abstract componentType name. */
 export type ComponentPolicyEntry = string;
@@ -27,93 +38,53 @@ const CONCRETE_MATCH_DISTANCE = 0;
 const ABSTRACT_GROUP_MATCH_DISTANCE = 1;
 const WILDCARD_MATCH_DISTANCE = 2;
 
-// Concrete members of each AgenticComponentUnion entry (src/agents/index.ts).
-const AGENTIC_COMPONENT_TYPES = [
-  "Agent",
-  "Swarm",
-  "ManagerWorkers",
-  "RemoteAgent",
-  "A2AAgent",
-  "SpecializedAgent",
-];
+/**
+ * The structural surface of the SDK's runtime discriminated unions: every
+ * member is a Zod object whose `componentType` is a string literal.
+ */
+interface ComponentTypeUnion {
+  options: ReadonlyArray<{ shape: { componentType: { value: string } } }>;
+}
 
-// Concrete members of NodeUnion (src/flows/nodes/index.ts).
-const NODE_TYPES = [
-  "StartNode",
-  "EndNode",
-  "LlmNode",
-  "ToolNode",
-  "AgentNode",
-  "FlowNode",
-  "BranchingNode",
-  "MapNode",
-  "ParallelMapNode",
-  "ParallelFlowNode",
-  "ApiNode",
-  "InputMessageNode",
-  "OutputMessageNode",
-  "CatchExceptionNode",
-];
+/** Concrete componentType names of the members of a discriminated union. */
+function unionMemberTypes(union: ComponentTypeUnion): ReadonlySet<string> {
+  return new Set(
+    union.options.map((option) => option.shape.componentType.value),
+  );
+}
 
-// Concrete members of ToolUnion (src/tools/index.ts).
-const TOOL_TYPES = ["ServerTool", "ClientTool", "RemoteTool", "BuiltinTool", "MCPTool"];
+// Derived at module load from the SDK's runtime discriminated unions so a
+// new union member can never silently escape a group-level policy entry.
+const AGENTIC_COMPONENT_TYPES = unionMemberTypes(AgenticComponentUnion);
+const NODE_TYPES = unionMemberTypes(NodeUnion);
+const TOOL_TYPES = unionMemberTypes(ToolUnion);
 
 /**
  * Membership of the SDK's abstract component groups, keyed by
- * `AbstractComponentType` name (src/component.ts). Hardcoded from the SDK's
- * discriminated unions:
- * - AgenticComponentUnion (src/agents/index.ts)
- * - NodeUnion (src/flows/nodes/index.ts)
- * - ToolUnion (src/tools/index.ts)
- * - LlmConfigUnion (src/llms/index.ts)
- * - ToolBoxUnion (src/tools/toolbox.ts)
- * - OciClientConfigUnion (src/llms/oci-client-config.ts)
- * - ClientTransportUnion (src/mcp/client-transport.ts)
- * - SupportedDatastoresSchema (src/transforms/message-transform.ts)
- * - MessageTransformUnion (src/transforms/message-transform.ts)
+ * `AbstractComponentType` name (src/component.ts), each derived from the
+ * runtime discriminated union owning that group.
  */
 const ABSTRACT_COMPONENT_GROUPS: Record<string, ReadonlySet<string>> = {
-  AgenticComponent: new Set(AGENTIC_COMPONENT_TYPES),
-  Node: new Set(NODE_TYPES),
-  Tool: new Set(TOOL_TYPES),
-  LlmConfig: new Set([
-    "OpenAiCompatibleConfig",
-    "OllamaConfig",
-    "VllmConfig",
-    "OpenAiConfig",
-    "OciGenAiConfig",
-  ]),
-  ToolBox: new Set(["MCPToolBox"]),
-  OciClientConfig: new Set([
-    "OciClientConfigWithApiKey",
-    "OciClientConfigWithInstancePrincipal",
-    "OciClientConfigWithResourcePrincipal",
-    "OciClientConfigWithSecurityToken",
-  ]),
-  ClientTransport: new Set([
-    "StdioTransport",
-    "SSETransport",
-    "SSEmTLSTransport",
-    "StreamableHTTPTransport",
-    "StreamableHTTPmTLSTransport",
-    "RemoteTransport",
-  ]),
-  Datastore: new Set([
-    "InMemoryCollectionDatastore",
-    "OracleDatabaseDatastore",
-    "PostgresDatabaseDatastore",
-  ]),
-  MessageTransform: new Set([
-    "MessageSummarizationTransform",
-    "ConversationSummarizationTransform",
-  ]),
+  AgenticComponent: AGENTIC_COMPONENT_TYPES,
+  Node: NODE_TYPES,
+  Tool: TOOL_TYPES,
+  LlmConfig: unionMemberTypes(LlmConfigUnion),
+  ToolBox: unionMemberTypes(ToolBoxUnion),
+  OciClientConfig: unionMemberTypes(OciClientConfigUnion),
+  ClientTransport: unionMemberTypes(ClientTransportUnion),
+  Datastore: unionMemberTypes(SupportedDatastoresSchema),
+  MessageTransform: unionMemberTypes(MessageTransformUnion),
 };
 
 /**
  * Every builtin componentType extending ComponentWithIOSchema (schemas built
  * on ComponentWithIOSchema / ToolBaseSchema / NodeBaseSchema across src/).
+ * The three tail entries have no runtime union to derive from; a unit test
+ * (tests/adapters/common/component-policy.test.ts) pins this set against the
+ * `BUILTIN_SCHEMA_MAP` schemas that carry inputs/outputs so drift fails
+ * loudly. Exported for that test only.
  */
-const COMPONENT_WITH_IO_TYPES: ReadonlySet<string> = new Set([
+export const COMPONENT_WITH_IO_TYPES: ReadonlySet<string> = new Set([
   ...AGENTIC_COMPONENT_TYPES,
   ...NODE_TYPES,
   ...TOOL_TYPES,

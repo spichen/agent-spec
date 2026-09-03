@@ -8,13 +8,18 @@
  * loaders block `StdioTransport` by default.
  */
 import { describe, expect, it } from "vitest";
+import { z } from "zod";
 import {
+  BUILTIN_SCHEMA_MAP,
   createAgent,
   createMCPTool,
   createStdioTransport,
   createVllmConfig,
 } from "../../../src/index.js";
-import { ComponentLoadPolicy } from "../../../src/adapters/common/component-policy.js";
+import {
+  COMPONENT_WITH_IO_TYPES,
+  ComponentLoadPolicy,
+} from "../../../src/adapters/common/component-policy.js";
 import { AgentSpecLoader } from "../../../src/adapters/langgraph/agentspec-loader.js";
 
 function blockedError(componentType: string): string {
@@ -178,6 +183,31 @@ describe("ComponentLoadPolicy.validateComponentTree", () => {
     expect(() => policy.validateComponentTree(agentWithNestedTransport)).toThrow(
       notAllowedError("StdioTransport"),
     );
+  });
+});
+
+describe("COMPONENT_WITH_IO_TYPES drift pin", () => {
+  // The abstract policy groups are derived from the SDK's runtime
+  // discriminated unions at module load, but the ComponentWithIO wildcard set
+  // has no owning union: its tail entries (MCPToolSpec, Flow,
+  // AgentSpecializationParameters) are hand-listed. This test derives the
+  // real membership from the builtin schemas so any drift fails loudly.
+  it("matches the BUILTIN_SCHEMA_MAP schemas that declare inputs/outputs", () => {
+    const derived = new Set<string>();
+    for (const [componentType, schema] of Object.entries(BUILTIN_SCHEMA_MAP)) {
+      let unwrapped: z.ZodTypeAny = schema as z.ZodTypeAny;
+      while (unwrapped instanceof z.ZodEffects) {
+        unwrapped = unwrapped._def.schema as z.ZodTypeAny;
+      }
+      if (
+        unwrapped instanceof z.ZodObject &&
+        "inputs" in unwrapped.shape &&
+        "outputs" in unwrapped.shape
+      ) {
+        derived.add(componentType);
+      }
+    }
+    expect([...COMPONENT_WITH_IO_TYPES].sort()).toEqual([...derived].sort());
   });
 });
 

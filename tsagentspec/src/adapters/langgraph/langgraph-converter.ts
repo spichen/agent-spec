@@ -20,8 +20,10 @@
  *   schema (`Annotation.Root` is silently ignored by the JS `createAgent`);
  *   the langchain JS agent state has no `remaining_steps` channel, so no such
  *   key is added.
- * - No tracing callbacks/spans are attached; `patchWithExecutionSpan` is a
- *   no-op seam invoked at the same sites as Python.
+ * - No tracing callbacks/spans are attached; `patchWithExecutionSpan` is an
+ *   identity seam invoked at the same graph-compilation sites as Python with
+ *   the compiled-from component, while LLM/tool callback attachment has no
+ *   seam at all (see `tracing.ts`).
  * - Python's "async interrupts on Python < 3.11" load-time warning has no JS
  *   equivalent and is not ported.
  */
@@ -501,7 +503,10 @@ export class AgentSpecToLangGraphConverter {
       createAgentParams as unknown as Parameters<typeof createAgent>[0],
     );
     applyPythonToolErrorSemantics(reactAgent);
-    return patchWithExecutionSpan(reactAgent);
+    return patchWithExecutionSpan(reactAgent, {
+      kind: "agent",
+      component: info.agent,
+    });
   }
 
   private async convertAgent(
@@ -783,7 +788,10 @@ export class AgentSpecToLangGraphConverter {
         ? { checkpointer: context.checkpointer }
         : {},
     );
-    return patchWithExecutionSpan(compiledGraph);
+    return patchWithExecutionSpan(compiledGraph, {
+      kind: "flow",
+      component: flow,
+    });
   }
 
   /** Add one conditional edge per source node, routing on the last branch. */
