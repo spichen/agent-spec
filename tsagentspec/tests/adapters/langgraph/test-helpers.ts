@@ -16,6 +16,9 @@
  *   of patching `httpx.request`).
  * - Spec builder helpers (`makeLlmConfig`, `makeAgent`) and interrupt/resume
  *   helpers matching the Python test command shapes.
+ * - Flow builder/runner helpers shared by the flow suites (`ioStartNode`,
+ *   `ioEndNode`, `ctrl`, `dataEdge`, `loadFlow`) and result accessors
+ *   (`outputsOf`, `messagesOf`, `detailsOf`).
  */
 import type { CallbackManagerForLLMRun } from "@langchain/core/callbacks/manager";
 import {
@@ -25,16 +28,24 @@ import {
 } from "@langchain/core/language_models/chat_models";
 import { AIMessage, type BaseMessage } from "@langchain/core/messages";
 import type { ChatResult } from "@langchain/core/outputs";
-import { Command } from "@langchain/langgraph";
+import { Command, type MemorySaver } from "@langchain/langgraph";
 import {
   createAgent as createAgentSpecAgent,
+  createControlFlowEdge,
+  createDataFlowEdge,
+  createEndNode,
+  createStartNode,
   createVllmConfig,
 } from "../../../src/index.js";
 import type {
   Agent,
   ComponentBase,
+  ComponentWithIO,
+  EndNode,
+  Flow,
   LlmConfig,
   Property,
+  StartNode,
   Tool,
   ToolBox,
   VllmConfig,
@@ -355,4 +366,101 @@ export function rejectCommand(reason?: string): Command {
       ],
     },
   });
+}
+
+/** The invocable surface of a compiled flow graph. */
+export interface CompiledFlow {
+  invoke(
+    input: unknown,
+    config?: unknown,
+  ): Promise<Record<string, unknown>>;
+}
+
+/** A StartNode declaring the same properties as inputs and outputs. */
+export function ioStartNode(name: string, props: Property[] = []): StartNode {
+  return createStartNode({ name, inputs: props, outputs: props });
+}
+
+/** An EndNode declaring the same properties as inputs and outputs. */
+export function ioEndNode(
+  name: string,
+  props: Property[] = [],
+  branchName?: string,
+): EndNode {
+  return createEndNode({
+    name,
+    inputs: props,
+    outputs: props,
+    ...(branchName !== undefined ? { branchName } : {}),
+  });
+}
+
+/** A control-flow edge named after its endpoints (and optional branch). */
+export function ctrl(
+  fromNode: Record<string, unknown>,
+  toNode: Record<string, unknown>,
+  fromBranch?: string,
+) {
+  return createControlFlowEdge({
+    name: `${String(fromNode["name"])}_to_${String(toNode["name"])}${
+      fromBranch !== undefined ? `_${fromBranch}` : ""
+    }`,
+    fromNode,
+    toNode,
+    ...(fromBranch !== undefined ? { fromBranch } : {}),
+  });
+}
+
+/** A data-flow edge named after its endpoints and routed properties. */
+export function dataEdge(
+  sourceNode: ComponentWithIO,
+  destinationNode: ComponentWithIO,
+  sourceOutput: string,
+  destinationInput: string = sourceOutput,
+) {
+  return createDataFlowEdge({
+    name: `${sourceNode.name}.${sourceOutput}_to_${destinationNode.name}.${destinationInput}`,
+    sourceNode,
+    sourceOutput,
+    destinationNode,
+    destinationInput,
+  });
+}
+
+/** The `outputs` record of a flow invoke result. */
+export function outputsOf(
+  result: Record<string, unknown>,
+): Record<string, unknown> {
+  return result["outputs"] as Record<string, unknown>;
+}
+
+/** The messages of an invoke result. */
+export function messagesOf(result: Record<string, unknown>): BaseMessage[] {
+  return result["messages"] as BaseMessage[];
+}
+
+/** The `node_execution_details` record of a flow invoke result. */
+export function detailsOf(
+  result: Record<string, unknown>,
+): Record<string, unknown> {
+  return result["node_execution_details"] as Record<string, unknown>;
+}
+
+/** Load a Flow spec into an invocable compiled graph. */
+export async function loadFlow(
+  flow: Flow,
+  options?: {
+    toolRegistry?: Record<string, unknown>;
+    checkpointer?: MemorySaver;
+  },
+): Promise<CompiledFlow> {
+  const loader = new AgentSpecLoader({
+    ...(options?.toolRegistry !== undefined
+      ? { toolRegistry: options.toolRegistry }
+      : {}),
+    ...(options?.checkpointer !== undefined
+      ? { checkpointer: options.checkpointer }
+      : {}),
+  });
+  return (await loader.loadComponent(flow)) as CompiledFlow;
 }

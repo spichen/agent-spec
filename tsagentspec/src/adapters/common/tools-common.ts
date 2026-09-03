@@ -22,6 +22,7 @@
  * `fetchWithAdapterDefaults`.
  */
 import type { RemoteTool } from "../../tools/remote-tool.js";
+import { isPlainRecord } from "./guards.js";
 import {
   renderNestedObjectTemplate,
   renderTemplate,
@@ -31,14 +32,6 @@ import {
   maybeWarnAboutUnrestrictedTemplatedUrl,
   validateUrlAgainstAllowList,
 } from "./url-validation.js";
-
-function isPlainRecord(value: unknown): value is Record<string, unknown> {
-  if (typeof value !== "object" || value === null || Array.isArray(value)) {
-    return false;
-  }
-  const prototype: unknown = Object.getPrototypeOf(value);
-  return prototype === Object.prototype || prototype === null;
-}
 
 /**
  * Default timeout for RemoteTool / ApiNode HTTP requests, in milliseconds.

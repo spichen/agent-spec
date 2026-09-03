@@ -10,6 +10,7 @@
  * objects/arrays.
  */
 import { TEMPLATE_PLACEHOLDER_REGEXP } from "../../templating.js";
+import { isPlainRecord } from "./guards.js";
 
 /** Render a value for insertion into a template string. */
 export function stringifyTemplateValue(value: unknown): string {
@@ -17,12 +18,6 @@ export function stringifyTemplateValue(value: unknown): string {
     return JSON.stringify(value);
   }
   return String(value);
-}
-
-function isPlainObject(value: unknown): value is Record<string, unknown> {
-  if (typeof value !== "object" || value === null) return false;
-  const prototype: unknown = Object.getPrototypeOf(value);
-  return prototype === Object.prototype || prototype === null;
 }
 
 /**
@@ -90,7 +85,7 @@ export function renderNestedObjectTemplate(
       [...object].map((item) => renderNestedObjectTemplate(item, inputs)),
     );
   }
-  if (isPlainObject(object)) {
+  if (isPlainRecord(object)) {
     const rendered: Record<string, unknown> = {};
     for (const [key, value] of Object.entries(object)) {
       rendered[renderTemplate(key, inputs)] = renderNestedObjectTemplate(

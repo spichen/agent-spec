@@ -18,87 +18,22 @@
 import { describe, expect, it } from "vitest";
 import type { BaseMessage } from "@langchain/core/messages";
 import {
-  createControlFlowEdge,
-  createDataFlowEdge,
-  createEndNode,
   createFlow,
   createServerTool,
-  createStartNode,
   createToolNode,
   integerProperty,
   numberProperty,
   stringProperty,
-  type ComponentWithIO,
-  type EndNode,
   type Flow,
   type Property,
-  type StartNode,
 } from "../../../src/index.js";
-import { AgentSpecLoader } from "../../../src/adapters/langgraph/agentspec-loader.js";
-
-/** The invocable surface of a compiled flow graph. */
-interface CompiledFlow {
-  invoke(
-    input: unknown,
-    config?: unknown,
-  ): Promise<Record<string, unknown>>;
-}
-
-/** A StartNode declaring the same properties as inputs and outputs. */
-function ioStartNode(name: string, props: Property[] = []): StartNode {
-  return createStartNode({ name, inputs: props, outputs: props });
-}
-
-/** An EndNode declaring the same properties as inputs and outputs. */
-function ioEndNode(
-  name: string,
-  props: Property[] = [],
-  branchName?: string,
-): EndNode {
-  return createEndNode({
-    name,
-    inputs: props,
-    outputs: props,
-    ...(branchName !== undefined ? { branchName } : {}),
-  });
-}
-
-function ctrl(
-  fromNode: Record<string, unknown>,
-  toNode: Record<string, unknown>,
-  fromBranch?: string,
-) {
-  return createControlFlowEdge({
-    name: `${String(fromNode["name"])}_to_${String(toNode["name"])}${
-      fromBranch !== undefined ? `_${fromBranch}` : ""
-    }`,
-    fromNode,
-    toNode,
-    ...(fromBranch !== undefined ? { fromBranch } : {}),
-  });
-}
-
-function dataEdge(
-  sourceNode: ComponentWithIO,
-  destinationNode: ComponentWithIO,
-  sourceOutput: string,
-  destinationInput: string = sourceOutput,
-) {
-  return createDataFlowEdge({
-    name: `${sourceNode.name}.${sourceOutput}_to_${destinationNode.name}.${destinationInput}`,
-    sourceNode,
-    sourceOutput,
-    destinationNode,
-    destinationInput,
-  });
-}
-
-async function loadFlow(flow: Flow, toolRegistry?: Record<string, unknown>) {
-  const loader = new AgentSpecLoader(
-    toolRegistry !== undefined ? { toolRegistry } : undefined,
-  );
-  return (await loader.loadComponent(flow)) as CompiledFlow;
-}
+import {
+  ctrl,
+  dataEdge,
+  ioEndNode,
+  ioStartNode,
+  loadFlow,
+} from "./test-helpers.js";
 
 /** A start -> end pass-through flow over the given properties. */
 function passThroughFlow(props: Property[], endBranchName?: string): Flow {
@@ -296,7 +231,9 @@ describe("data-flow edges", () => {
     });
     expect(flow.dataFlowConnections).toBeUndefined();
 
-    const graph = await loadFlow(flow, { double_tool: double });
+    const graph = await loadFlow(flow, {
+      toolRegistry: { double_tool: double },
+    });
     const result = await graph.invoke({ inputs: { x: 3 } });
     expect(result["outputs"]).toEqual({ y: 6 });
   });
@@ -323,7 +260,9 @@ describe("data-flow edges", () => {
     });
 
     const graph = await loadFlow(flow, {
-      double_tool: (input: unknown) => (input as { value: number }).value * 2,
+      toolRegistry: {
+        double_tool: (input: unknown) => (input as { value: number }).value * 2,
+      },
     });
     const result = await graph.invoke({ inputs: { x: 4 } });
     expect(result["outputs"]).toEqual({ y: 8 });
@@ -362,10 +301,12 @@ describe("data-flow edges", () => {
     });
 
     const graph = await loadFlow(flow, {
-      double_tool: double,
-      add_tool: (input: unknown) => {
-        const { x, y } = input as { x: number; y: number };
-        return x + y;
+      toolRegistry: {
+        double_tool: double,
+        add_tool: (input: unknown) => {
+          const { x, y } = input as { x: number; y: number };
+          return x + y;
+        },
       },
     });
     const result = await graph.invoke({ inputs: { x: 3 } });

@@ -55,9 +55,23 @@ function unionMemberTypes(union: ComponentTypeUnion): ReadonlySet<string> {
 
 // Derived at module load from the SDK's runtime discriminated unions so a
 // new union member can never silently escape a group-level policy entry.
+// The exported sets double as the membership tests of the LangGraph
+// converter's dispatch, keeping "which types belong to which family" derived
+// from the unions in exactly one place.
 const AGENTIC_COMPONENT_TYPES = unionMemberTypes(AgenticComponentUnion);
-const NODE_TYPES = unionMemberTypes(NodeUnion);
+
+/** Concrete componentType names of the SDK's flow-node union. */
+export const NODE_TYPES: ReadonlySet<string> = unionMemberTypes(NodeUnion);
 const TOOL_TYPES = unionMemberTypes(ToolUnion);
+
+/** Concrete componentType names of the SDK's LLM-config union. */
+export const LLM_CONFIG_TYPES: ReadonlySet<string> =
+  unionMemberTypes(LlmConfigUnion);
+
+/** Concrete componentType names of the SDK's MCP client-transport union. */
+export const CLIENT_TRANSPORT_TYPES: ReadonlySet<string> = unionMemberTypes(
+  ClientTransportUnion,
+);
 
 /**
  * Membership of the SDK's abstract component groups, keyed by
@@ -68,10 +82,10 @@ const ABSTRACT_COMPONENT_GROUPS: Record<string, ReadonlySet<string>> = {
   AgenticComponent: AGENTIC_COMPONENT_TYPES,
   Node: NODE_TYPES,
   Tool: TOOL_TYPES,
-  LlmConfig: unionMemberTypes(LlmConfigUnion),
+  LlmConfig: LLM_CONFIG_TYPES,
   ToolBox: unionMemberTypes(ToolBoxUnion),
   OciClientConfig: unionMemberTypes(OciClientConfigUnion),
-  ClientTransport: unionMemberTypes(ClientTransportUnion),
+  ClientTransport: CLIENT_TRANSPORT_TYPES,
   Datastore: unionMemberTypes(SupportedDatastoresSchema),
   MessageTransform: unionMemberTypes(MessageTransformUnion),
 };

@@ -14,10 +14,9 @@ import type { BaseMessage } from "@langchain/core/messages";
 import type { RunnableConfig } from "@langchain/core/runnables";
 import type { AgentNode } from "../../../flows/index.js";
 import type { Property } from "../../../property.js";
-import { renderTemplate } from "../../common/index.js";
-import type { ExecuteOutput, NodeOutputs } from "../types.js";
-import type { InvocableGraph } from "./executor.js";
-import { NodeExecutor, isPlainRecord } from "./executor.js";
+import { isRecordLike, renderTemplate } from "../../common/index.js";
+import type { ExecuteOutput, InvocableGraph, NodeOutputs } from "../types.js";
+import { NodeExecutor } from "./executor.js";
 
 /**
  * Extract the outputs of an agent invoke result for the expected output
@@ -37,7 +36,7 @@ export function extractOutputsFromInvokeResult(
   }
   const structuredResponse =
     result["structuredResponse"] ?? result["structured_response"];
-  if (isPlainRecord(structuredResponse)) {
+  if (isRecordLike(structuredResponse)) {
     Object.assign(outputs, structuredResponse);
   }
   for (const output of expectedOutputs) {
@@ -53,14 +52,21 @@ export function extractOutputsFromInvokeResult(
  * prompt against the node inputs, compiles (and caches) a react agent per
  * rendered prompt through the converter-provided factory, and invokes it on
  * the flow messages.
+ *
+ * `_execute` is a template method, mirroring Python: prepare (compile the
+ * cached agent, shape the invoke payload) then invoke then format. Subclasses
+ * (`ManagerWorkersNodeExecutor`) override only `prepareAgentAndInputs` and
+ * `formatAgentResult`, sharing the compile callback, the rendered-prompt
+ * cache and `withDrivingMessage`.
  */
 export class AgentNodeExecutor extends NodeExecutor<AgentNode> {
-  private readonly compileAgent: (
+  /** Compiles a runnable graph for one rendered system prompt (converter-provided). */
+  protected readonly compileAgent: (
     renderedSystemPrompt: string,
   ) => Promise<unknown>;
   protected readonly config: RunnableConfig;
   /** Compiled agents cached by rendered system prompt. */
-  private readonly agentsCache = new Map<string, unknown>();
+  protected readonly agentsCache = new Map<string, unknown>();
 
   constructor(
     node: AgentNode,
@@ -75,16 +81,13 @@ export class AgentNodeExecutor extends NodeExecutor<AgentNode> {
   private async createReactAgentWithGivenInputValues(
     inputs: NodeOutputs,
   ): Promise<InvocableGraph> {
-    if (this.node.agent.componentType !== "Agent") {
+    const agentComponent = this.node.agent;
+    if (agentComponent.componentType !== "Agent") {
       throw new Error(
         "AgentNodeExecutor can only be used with AgentSpecAgent agents",
       );
     }
-    const agentComponent = this.node.agent as { systemPrompt?: unknown };
-    const systemPrompt = renderTemplate(
-      String(agentComponent.systemPrompt ?? ""),
-      inputs,
-    );
+    const systemPrompt = renderTemplate(agentComponent.systemPrompt, inputs);
     let agent = this.agentsCache.get(systemPrompt);
     if (agent === undefined) {
       agent = await this.compileAgent(systemPrompt);
@@ -96,6 +99,19 @@ export class AgentNodeExecutor extends NodeExecutor<AgentNode> {
   /** LangGraph's agent expects at least one user message to drive execution. */
   protected withDrivingMessage(messages: BaseMessage[]): unknown[] {
     return messages.length > 0 ? messages : [{ role: "user", content: "" }];
+  }
+
+  /** Compile (or reuse) the agent for the inputs and shape its invoke payload. */
+  protected async prepareAgentAndInputs(
+    inputs: NodeOutputs,
+    messages: BaseMessage[],
+  ): Promise<[InvocableGraph, Record<string, unknown>]> {
+    const agent = await this.createReactAgentWithGivenInputValues(inputs);
+    const preparedInputs: Record<string, unknown> = {
+      ...inputs,
+      messages: this.withDrivingMessage(messages),
+    };
+    return [agent, preparedInputs];
   }
 
   /** Map an agent invoke result onto the node outputs (or a chat message). */
@@ -125,11 +141,10 @@ export class AgentNodeExecutor extends NodeExecutor<AgentNode> {
     inputs: NodeOutputs,
     messages: BaseMessage[],
   ): Promise<ExecuteOutput> {
-    const agent = await this.createReactAgentWithGivenInputValues(inputs);
-    const preparedInputs: Record<string, unknown> = {
-      ...inputs,
-      messages: this.withDrivingMessage(messages),
-    };
+    const [agent, preparedInputs] = await this.prepareAgentAndInputs(
+      inputs,
+      messages,
+    );
     const result = await agent.invoke(preparedInputs, this.config);
     return this.formatAgentResult(result);
   }

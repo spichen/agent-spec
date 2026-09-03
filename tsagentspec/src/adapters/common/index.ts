@@ -6,6 +6,8 @@
  * RemoteTool execution, converter interfaces, and the loader/exporter base
  * classes.
  */
+export { isPlainRecord, isRecordLike } from "./guards.js";
+export { importOptionalPeer } from "./optional-peer.js";
 export {
   renderTemplate,
   renderNestedObjectTemplate,
@@ -19,7 +21,10 @@ export {
   validateUrlAgainstAllowList,
 } from "./url-validation.js";
 export {
+  CLIENT_TRANSPORT_TYPES,
   ComponentLoadPolicy,
+  LLM_CONFIG_TYPES,
+  NODE_TYPES,
   type ComponentPolicyEntry,
   type ComponentPolicyInput,
 } from "./component-policy.js";

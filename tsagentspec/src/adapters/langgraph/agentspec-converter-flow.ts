@@ -35,103 +35,18 @@ import {
   unionProperty,
 } from "../../property.js";
 import { createServerTool } from "../../tools/index.js";
+import type { RuntimeToAgentSpecConverter } from "../common/converters.js";
+import type { BranchLike, BuilderLike } from "./graph-introspection.js";
+import {
+  definitionKeys,
+  getGraphBuilder,
+  isCompiledGraphLike,
+  isStateGraphBuilderLike,
+  stateSchemaKeys,
+} from "./graph-introspection.js";
 
 const START = "__start__";
 const END = "__end__";
-
-/** The converter surface needed for subgraph recursion (avoids a cycle). */
-export interface GraphConverterLike {
-  convert(
-    runtimeComponent: unknown,
-    referencedObjects?: Map<string, ComponentBase>,
-  ): ComponentBase;
-}
-
-/** Runtime shape of one LangGraph builder node spec. */
-interface NodeSpecLike {
-  runnable?: unknown;
-  input?: unknown;
-}
-
-/** Runtime shape of one LangGraph conditional-edge branch. */
-interface BranchLike {
-  path?: unknown;
-  ends?: Record<string, string>;
-}
-
-/** Runtime shape of a LangGraph StateGraph builder. */
-interface BuilderLike {
-  nodes: Record<string, NodeSpecLike>;
-  edges: Iterable<[string, string]>;
-  branches?: Record<string, Record<string, BranchLike>>;
-  channels?: Record<string, unknown>;
-  _schemaDefinition?: unknown;
-  _inputDefinition?: unknown;
-  _outputDefinition?: unknown;
-}
-
-function isPlainRecord(value: unknown): value is Record<string, unknown> {
-  return typeof value === "object" && value !== null && !Array.isArray(value);
-}
-
-/** Duck-type check for a compiled LangGraph graph. */
-export function isCompiledGraphLike(
-  value: unknown,
-): value is { builder: BuilderLike; name?: unknown } {
-  return (
-    isPlainRecord(value) &&
-    (value as { lg_is_pregel?: unknown }).lg_is_pregel === true
-  );
-}
-
-/** Duck-type check for a StateGraph builder. */
-export function isStateGraphBuilderLike(value: unknown): value is BuilderLike {
-  if (!isPlainRecord(value)) {
-    return false;
-  }
-  const candidate = value as {
-    nodes?: unknown;
-    compile?: unknown;
-    addNode?: unknown;
-  };
-  return (
-    isPlainRecord(candidate.nodes) &&
-    typeof candidate.compile === "function" &&
-    typeof candidate.addNode === "function"
-  );
-}
-
-/** Duck-type check for anything convertible to a Flow (builder or compiled). */
-export function isStateGraphLike(value: unknown): boolean {
-  return isCompiledGraphLike(value) || isStateGraphBuilderLike(value);
-}
-
-/** Normalize a compiled graph or builder to the builder. */
-export function getGraphBuilder(graph: unknown): BuilderLike {
-  if (isCompiledGraphLike(graph)) {
-    return graph.builder;
-  }
-  return graph as BuilderLike;
-}
-
-/**
- * Extract the state-key names of a schema definition: a langgraph channel
- * map, an `Annotation.Root` (via `.spec`) or a zod object (via `.shape`).
- */
-function definitionKeys(definition: unknown): string[] | undefined {
-  if (!isPlainRecord(definition)) {
-    return undefined;
-  }
-  const spec = (definition as { spec?: unknown }).spec;
-  if (isPlainRecord(spec)) {
-    return Object.keys(spec);
-  }
-  const shape = (definition as { shape?: unknown }).shape;
-  if (isPlainRecord(shape)) {
-    return Object.keys(shape);
-  }
-  return Object.keys(definition);
-}
 
 /** Build the `state` property listing the given state keys. */
 function statePropertyFromKeys(keys: string[] | undefined): Property {
@@ -144,12 +59,6 @@ function statePropertyFromKeys(keys: string[] | undefined): Property {
     type: "object",
     properties,
   });
-}
-
-function stateSchemaKeys(builder: BuilderLike): string[] | undefined {
-  return (
-    definitionKeys(builder._schemaDefinition) ?? definitionKeys(builder.channels)
-  );
 }
 
 function getStateProperty(builder: BuilderLike): Property {
@@ -509,7 +418,7 @@ function branchConvertToAgentSpec(
  * Flow of synthetic ToolNodes / FlowNodes plus Start/End nodes and edges.
  */
 export function langgraphGraphConvertToAgentSpec(
-  converter: GraphConverterLike,
+  converter: RuntimeToAgentSpecConverter,
   graph: unknown,
   referencedObjects: Map<string, ComponentBase>,
 ): Flow {
@@ -531,7 +440,7 @@ export function langgraphGraphConvertToAgentSpec(
       const subflow = converter.convert(runnable, new Map()) as Flow;
       const flowNode = createFlowNode({
         name: nodeName,
-        subflow: subflow as unknown as Record<string, unknown>,
+        subflow,
       });
       referencedObjects.set(nodeName, flowNode);
       nodes.push(flowNode);
@@ -587,8 +496,8 @@ export function langgraphGraphConvertToAgentSpec(
 
   return createFlow({
     name: flowName,
-    startNode: startNode as unknown as Record<string, unknown>,
-    nodes: nodes as unknown as Record<string, unknown>[],
+    startNode,
+    nodes,
     controlFlowConnections: controlFlowEdges,
     dataFlowConnections: dataFlowEdges,
   });

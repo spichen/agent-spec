@@ -28,7 +28,6 @@ import {
 } from "../../../src/index.js";
 import {
   convertLlmConfig,
-  generationConfigFromAgentSpec,
   prepareOpenAiCompatibleUrl,
 } from "../../../src/adapters/langgraph/llm.js";
 
@@ -74,30 +73,6 @@ describe("prepareOpenAiCompatibleUrl", () => {
 
   it.each(cases)("formats %j as %j", (raw, expected) => {
     expect(prepareOpenAiCompatibleUrl(raw)).toBe(expected);
-  });
-});
-
-describe("generationConfigFromAgentSpec", () => {
-  it("returns an empty config when no parameters are given", () => {
-    expect(generationConfigFromAgentSpec(undefined)).toEqual({});
-  });
-
-  it("copies only the parameters that are set", () => {
-    expect(generationConfigFromAgentSpec({ temperature: 0.5 })).toEqual({
-      temperature: 0.5,
-    });
-    expect(
-      generationConfigFromAgentSpec(DEFAULT_GENERATION_PARAMETERS),
-    ).toEqual({ temperature: 0.2, maxTokens: 128, topP: 0.8 });
-  });
-
-  it("ignores unsupported extra parameters", () => {
-    expect(
-      generationConfigFromAgentSpec({
-        temperature: 0.2,
-        presencePenalty: 1.0,
-      } as LlmGenerationConfig),
-    ).toEqual({ temperature: 0.2 });
   });
 });
 

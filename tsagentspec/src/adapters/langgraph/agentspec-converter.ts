@@ -38,15 +38,14 @@ import type { JsonSchemaValue, Property } from "../../property.js";
 import type { Tool } from "../../tools/index.js";
 import { createServerTool } from "../../tools/index.js";
 import type { RuntimeToAgentSpecConverter } from "../common/index.js";
+import { isRecordLike } from "../common/index.js";
+import { langgraphGraphConvertToAgentSpec } from "./agentspec-converter-flow.js";
 import {
   getGraphBuilder,
+  isCompiledGraphLike,
   isStateGraphLike,
-  langgraphGraphConvertToAgentSpec,
-} from "./agentspec-converter-flow.js";
-
-function isPlainRecord(value: unknown): value is Record<string, unknown> {
-  return typeof value === "object" && value !== null && !Array.isArray(value);
-}
+  stateSchemaKeys,
+} from "./graph-introspection.js";
 
 /**
  * True for a LangChain structured tool. `isStructuredTool` alone only tests
@@ -116,7 +115,7 @@ function isReactAgentInstance(value: unknown): value is ReactAgentLike {
     options?: unknown;
     graph?: unknown;
   };
-  if (!isPlainRecord(candidate.options)) {
+  if (!isRecordLike(candidate.options)) {
     return false;
   }
   if (candidate.constructor?.name === "ReactAgent") {
@@ -132,7 +131,7 @@ function isReactAgentGraph(value: unknown): boolean {
     return false;
   }
   const builder = getGraphBuilder(value);
-  return isPlainRecord(builder.nodes) && "model_request" in builder.nodes;
+  return isRecordLike(builder.nodes) && "model_request" in builder.nodes;
 }
 
 /** True for a graph built by `@langchain/langgraph-swarm`'s `createSwarm`. */
@@ -140,31 +139,18 @@ function isSwarmGraph(value: unknown): boolean {
   if (!isStateGraphLike(value)) {
     return false;
   }
-  const builder = getGraphBuilder(value) as {
-    nodes?: Record<string, { runnable?: unknown }>;
-    branches?: Record<string, unknown>;
-    channels?: Record<string, unknown>;
-    _schemaDefinition?: unknown;
-  };
-  const channels =
-    (isPlainRecord(builder._schemaDefinition)
-      ? builder._schemaDefinition
-      : undefined) ?? builder.channels;
-  if (!isPlainRecord(channels) || !("activeAgent" in channels)) {
+  const builder = getGraphBuilder(value);
+  if (!(stateSchemaKeys(builder) ?? []).includes("activeAgent")) {
     return false;
   }
   const startBranches = builder.branches?.["__start__"];
-  if (!isPlainRecord(startBranches)) {
+  if (!isRecordLike(startBranches)) {
     return false;
   }
   const nodeSpecs = Object.values(builder.nodes ?? {});
   return (
     nodeSpecs.length > 0 &&
-    nodeSpecs.every(
-      (spec) =>
-        (spec.runnable as { lg_is_pregel?: unknown } | undefined)
-          ?.lg_is_pregel === true,
-    )
+    nodeSpecs.every((spec) => isCompiledGraphLike(spec.runnable))
   );
 }
 
@@ -290,7 +276,7 @@ export class LangGraphToAgentSpecConverter
     const toolSchema = toJsonSchema(
       (tool as { schema: Parameters<typeof toJsonSchema>[0] }).schema,
     ) as JsonSchemaValue;
-    const argumentSchemas = isPlainRecord(toolSchema["properties"])
+    const argumentSchemas = isRecordLike(toolSchema["properties"])
       ? (toolSchema["properties"] as Record<string, JsonSchemaValue>)
       : {};
     const inputs = Object.entries(argumentSchemas).map(
@@ -396,7 +382,7 @@ export class LangGraphToAgentSpecConverter
     if (typeof systemPromptRaw === "string") {
       systemPrompt = systemPromptRaw;
     } else if (
-      isPlainRecord(systemPromptRaw) ||
+      isRecordLike(systemPromptRaw) ||
       (typeof systemPromptRaw === "object" && systemPromptRaw !== null)
     ) {
       const content = (systemPromptRaw as { content?: unknown }).content;

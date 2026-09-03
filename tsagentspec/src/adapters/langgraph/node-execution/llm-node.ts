@@ -8,9 +8,9 @@
 import type { BaseMessage } from "@langchain/core/messages";
 import type { LlmNode } from "../../../flows/index.js";
 import type { Property } from "../../../property.js";
-import { renderTemplate } from "../../common/index.js";
+import { isRecordLike, renderTemplate } from "../../common/index.js";
 import type { ExecuteOutput, NodeOutputs } from "../types.js";
-import { NodeExecutor, isPlainRecord } from "./executor.js";
+import { NodeExecutor } from "./executor.js";
 
 /** The chat-model surface the LlmNodeExecutor relies on. */
 interface ChatModelLike {
@@ -76,7 +76,7 @@ export class LlmNodeExecutor extends NodeExecutor<LlmNode> {
     nodeOutputs: Property[],
     generatedRaw: unknown,
   ): NodeOutputs {
-    if (!isPlainRecord(generatedRaw)) {
+    if (!isRecordLike(generatedRaw)) {
       throw new Error(
         `Expected structured LLM to return a dict, got ${typeof generatedRaw}`,
       );

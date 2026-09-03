@@ -9,7 +9,7 @@
  * the component load policy. All tests run offline.
  */
 import { describe, expect, it, vi } from "vitest";
-import { AIMessage, type BaseMessage } from "@langchain/core/messages";
+import { AIMessage } from "@langchain/core/messages";
 import { tool } from "@langchain/core/tools";
 import type { StructuredToolInterface } from "@langchain/core/tools";
 import { Command, MemorySaver } from "@langchain/langgraph";
@@ -34,6 +34,7 @@ import {
   loadWithFakeLlm,
   makeAgent,
   makeLlmConfig,
+  messagesOf,
   rejectCommand,
   threadConfig,
   toolCallMessage,
@@ -60,10 +61,6 @@ function makeWeatherServerTool(overrides?: { requiresConfirmation?: boolean }) {
 function getWeather(input: unknown): string {
   const { city } = input as { city: string };
   return `The weather in ${city} is sunny.`;
-}
-
-function messagesOf(result: Record<string, unknown>): BaseMessage[] {
-  return result["messages"] as BaseMessage[];
 }
 
 describe("AgentSpecLoader load entry points", () => {

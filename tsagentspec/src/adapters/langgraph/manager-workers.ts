@@ -13,7 +13,7 @@
  * Runtime contracts (node names, tool names, Send payload keys, roster text)
  * mirror the Python adapter exactly so specs behave the same across SDKs.
  */
-import type { BaseMessage, BaseMessageLike } from "@langchain/core/messages";
+import type { BaseMessage } from "@langchain/core/messages";
 import { HumanMessage, ToolMessage } from "@langchain/core/messages";
 import type { RunnableConfig } from "@langchain/core/runnables";
 import type { StructuredToolInterface } from "@langchain/core/tools";
@@ -33,7 +33,12 @@ import type { AgentNode } from "../../flows/index.js";
 import { renderTemplate } from "../common/index.js";
 import { AgentNodeExecutor } from "./node-execution.js";
 import { patchWithExecutionSpan } from "./tracing.js";
-import type { ExecuteOutput, NodeOutputs } from "./types.js";
+import type {
+  DynamicStateGraph,
+  ExecuteOutput,
+  InvocableGraph,
+  NodeOutputs,
+} from "./types.js";
 
 /**
  * Prefix of the synthetic `__delegate_to__<worker>` tool names the manager's
@@ -213,14 +218,6 @@ function makeManagerRouter(
   };
 }
 
-/** A graph-like runtime object exposing `invoke`. */
-interface InvocableGraph {
-  invoke(
-    input: unknown,
-    config?: RunnableConfig,
-  ): Promise<Record<string, unknown>>;
-}
-
 /**
  * Wrap a worker subgraph as a node of the ManagerWorkers parent graph.
  *
@@ -266,21 +263,6 @@ function wrapWorkerForSubgraph(
       ],
     };
   };
-}
-
-/** Loosely-typed StateGraph surface for graphs with dynamic node names. */
-interface DynamicStateGraph {
-  addNode(key: string, action: unknown): DynamicStateGraph;
-  addEdge(start: string, end: string): DynamicStateGraph;
-  addConditionalEdges(
-    source: string,
-    path: (state: Record<string, unknown>) => Send[] | string,
-    pathMap?: Record<string, string>,
-  ): DynamicStateGraph;
-  compile(options?: {
-    checkpointer?: BaseCheckpointSaver;
-    name?: string;
-  }): unknown;
 }
 
 /** Options for `compileManagerWorkers`. */
@@ -423,16 +405,15 @@ export async function compileManagerWorkers(
  * structured inputs inward nor a `structured_response` outward. Inputs are
  * therefore rendered into the group-manager's system prompt before compiling,
  * and the manager's final message is the node's single string output.
+ *
+ * Mirroring Python, only the parent's two template-method hooks are
+ * overridden: `prepareAgentAndInputs` (compile the hierarchical graph, run it
+ * on messages alone) and `formatAgentResult` (single-string output). The
+ * compile callback, the rendered-prompt cache and `withDrivingMessage` are
+ * the inherited ones.
  */
 export class ManagerWorkersNodeExecutor extends AgentNodeExecutor {
-  private readonly agentNode: AgentNode;
   private readonly managerWorkers: ManagerWorkers;
-  private readonly compileManagerWorkersFn: (
-    renderedSystemPrompt: string,
-  ) => Promise<unknown>;
-  private readonly invokeConfig: RunnableConfig;
-  /** Compiled graphs cached by rendered group-manager system prompt. */
-  private readonly graphCache = new Map<string, unknown>();
 
   constructor(
     node: AgentNode,
@@ -445,10 +426,7 @@ export class ManagerWorkersNodeExecutor extends AgentNodeExecutor {
         "ManagerWorkersNodeExecutor requires an AgentNode holding a ManagerWorkers",
       );
     }
-    this.agentNode = node;
-    this.managerWorkers = node.agent as ManagerWorkers;
-    this.compileManagerWorkersFn = compileManagerWorkers;
-    this.invokeConfig = config;
+    this.managerWorkers = node.agent;
     // Anything but a single string output cannot be honored (see class
     // docstring); raising here fails at conversion time rather than mid-run.
     const outputs = node.outputs ?? [];
@@ -462,8 +440,8 @@ export class ManagerWorkersNodeExecutor extends AgentNodeExecutor {
 
   /**
    * Compile the `ManagerWorkers` with the node inputs rendered into the
-   * group-manager's system prompt, cached by rendered prompt (the same key
-   * `AgentNodeExecutor` uses for its react-agent cache).
+   * group-manager's system prompt, cached by rendered prompt (the same
+   * `agentsCache` key `AgentNodeExecutor` uses for its react-agent cache).
    */
   private async createManagerWorkersWithGivenInputValues(
     inputs: NodeOutputs,
@@ -473,43 +451,38 @@ export class ManagerWorkersNodeExecutor extends AgentNodeExecutor {
       String(groupManager["systemPrompt"] ?? ""),
       inputs,
     );
-    let graph = this.graphCache.get(systemPrompt);
+    let graph = this.agentsCache.get(systemPrompt);
     if (graph === undefined) {
-      graph = await this.compileManagerWorkersFn(systemPrompt);
-      this.graphCache.set(systemPrompt, graph);
+      graph = await this.compileAgent(systemPrompt);
+      this.agentsCache.set(systemPrompt, graph);
     }
     return graph;
   }
 
-  protected async _execute(
+  protected override async prepareAgentAndInputs(
     inputs: NodeOutputs,
     messages: BaseMessage[],
-  ): Promise<ExecuteOutput> {
+  ): Promise<[InvocableGraph, Record<string, unknown>]> {
     // Inputs were baked into the group-manager's prompt, so this graph runs
     // on messages alone rather than the react-agent's remaining_steps state.
     const graph = await this.createManagerWorkersWithGivenInputValues(inputs);
-    // LangGraph's agent expects at least one user message to drive execution.
-    const drivingMessages: BaseMessageLike[] =
-      messages.length > 0 ? messages : [{ role: "user", content: "" }];
-    const result = await (graph as InvocableGraph).invoke(
-      { messages: drivingMessages },
-      this.invokeConfig,
-    );
+    return [
+      graph as InvocableGraph,
+      { messages: this.withDrivingMessage(messages) },
+    ];
+  }
+
+  protected override formatAgentResult(
+    result: Record<string, unknown>,
+  ): ExecuteOutput {
+    const nodeOutputs = this.node.outputs ?? [];
+    if (nodeOutputs.length === 0) {
+      return super.formatAgentResult(result);
+    }
     const resultMessages = Array.isArray(result["messages"])
       ? (result["messages"] as { content?: unknown }[])
       : [];
     const lastMessage = resultMessages[resultMessages.length - 1];
-    const nodeOutputs = this.agentNode.outputs ?? [];
-    if (nodeOutputs.length === 0) {
-      return [
-        {},
-        {
-          generated_messages: [
-            { role: "assistant", content: (lastMessage?.content ?? "") as string },
-          ],
-        },
-      ];
-    }
     // The constructor already rejected any shape but a single string output.
     return [{ [nodeOutputs[0]!.title]: lastMessage?.content }, {}];
   }

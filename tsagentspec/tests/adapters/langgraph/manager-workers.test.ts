@@ -44,6 +44,7 @@ import {
 import {
   FakeLlmAgentSpecLoader,
   makeLlmConfig,
+  messagesOf,
   threadConfig,
   type FakeLlmResponses,
 } from "./test-helpers.js";
@@ -126,11 +127,6 @@ function managerRouter(
   const branch = branchMap!["condition"];
   expect(branch).toBeDefined();
   return branch!.path.func;
-}
-
-/** The messages of an invoke result. */
-function messagesOf(result: Record<string, unknown>): BaseMessage[] {
-  return result["messages"] as BaseMessage[];
 }
 
 /**

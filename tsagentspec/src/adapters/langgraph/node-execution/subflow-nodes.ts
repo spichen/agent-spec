@@ -23,14 +23,14 @@ import {
   DEFAULT_NEXT_BRANCH,
 } from "../../../flows/index.js";
 import type { Property } from "../../../property.js";
-import { stringifyTemplateValue } from "../../common/index.js";
+import { isRecordLike, stringifyTemplateValue } from "../../common/index.js";
 import type {
   ExecuteOutput,
+  InvocableGraph,
   NodeExecutionDetails,
   NodeOutputs,
 } from "../types.js";
-import type { InvocableGraph } from "./executor.js";
-import { NodeExecutor, isPlainRecord } from "./executor.js";
+import { NodeExecutor } from "./executor.js";
 
 /**
  * Executes a FlowNode: invokes the compiled subflow with this node's inputs
@@ -41,9 +41,9 @@ export class FlowNodeExecutor extends NodeExecutor<FlowNode> {
   private readonly subflow: InvocableGraph;
   private readonly config: RunnableConfig;
 
-  constructor(node: FlowNode, subflow: unknown, config: RunnableConfig) {
+  constructor(node: FlowNode, subflow: InvocableGraph, config: RunnableConfig) {
     super(node);
-    this.subflow = subflow as InvocableGraph;
+    this.subflow = subflow;
     this.config = config;
   }
 
@@ -77,11 +77,11 @@ export class CatchExceptionNodeExecutor extends NodeExecutor<CatchExceptionNode>
 
   constructor(
     node: CatchExceptionNode,
-    subflow: unknown,
+    subflow: InvocableGraph,
     config: RunnableConfig,
   ) {
     super(node);
-    this.subflow = subflow as InvocableGraph;
+    this.subflow = subflow;
     this.config = config;
   }
 
@@ -94,7 +94,7 @@ export class CatchExceptionNodeExecutor extends NodeExecutor<CatchExceptionNode>
         { messages, inputs },
         this.config,
       );
-      const outputs: NodeOutputs = isPlainRecord(flowOutput["outputs"])
+      const outputs: NodeOutputs = isRecordLike(flowOutput["outputs"])
         ? { ...(flowOutput["outputs"] as NodeOutputs) }
         : {};
       // As per the spec, when the subflow runs without error
@@ -130,13 +130,13 @@ export class MapNodeExecutor extends NodeExecutor<MapNode> {
   private readonly subflow: InvocableGraph;
   private inputsToIterate: string[] = [];
 
-  constructor(node: MapNode, subflow: unknown) {
+  constructor(node: MapNode, subflow: InvocableGraph) {
     super(node);
     if (!node.inputs || node.inputs.length === 0) {
       throw new Error("MapNode has no inputs");
     }
     // Mirroring Python, the subflow runs are not passed the ambient config.
-    this.subflow = subflow as InvocableGraph;
+    this.subflow = subflow;
   }
 
   /** Set which inputs to iterate over (decided by the converter). */
@@ -235,7 +235,7 @@ export class MapNodeExecutor extends NodeExecutor<MapNode> {
         messages,
       });
       const subflowOutputs = subflowResult["outputs"];
-      if (isPlainRecord(subflowOutputs)) {
+      if (isRecordLike(subflowOutputs)) {
         this.accumulateOutputs(outputs, subflowOutputs);
       }
     }

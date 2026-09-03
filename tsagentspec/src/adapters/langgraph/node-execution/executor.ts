@@ -21,6 +21,7 @@ import { addMessages } from "@langchain/langgraph";
 import type { DataFlowEdge } from "../../../flows/index.js";
 import { DEFAULT_NEXT_BRANCH } from "../../../flows/index.js";
 import type { Property } from "../../../property.js";
+import { isRecordLike } from "../../common/index.js";
 import type {
   ExecuteOutput,
   FlowState,
@@ -36,21 +37,6 @@ export interface FlowNodeLike {
   name: string;
   inputs?: Property[];
   outputs?: Property[];
-}
-
-/** A compiled graph / react agent surface: everything invocable. */
-export interface InvocableGraph {
-  invoke(
-    input: unknown,
-    config?: RunnableConfig,
-  ): Promise<Record<string, unknown>>;
-}
-
-/** Loose record check: any non-array object (class instances included). */
-export function isPlainRecord(
-  value: unknown,
-): value is Record<string, unknown> {
-  return typeof value === "object" && value !== null && !Array.isArray(value);
 }
 
 /**
@@ -99,7 +85,7 @@ export abstract class NodeExecutor<
    */
   protected getInputs(state: FlowState): NodeOutputs {
     const nodeInputs = state.inputs?.[this.node.id];
-    const ioInputs: Record<string, unknown> = isPlainRecord(nodeInputs)
+    const ioInputs: Record<string, unknown> = isRecordLike(nodeInputs)
       ? { ...nodeInputs }
       : {};
     return castValuesAndAddDefaults(
@@ -130,7 +116,7 @@ export abstract class NodeExecutor<
     for (const edge of this.edges) {
       const destinationNodeId = String(edge.destinationNode["id"]);
       const existing = nextNodeInputs[destinationNodeId];
-      const destinationInputs: Record<string, unknown> = isPlainRecord(existing)
+      const destinationInputs: Record<string, unknown> = isRecordLike(existing)
         ? { ...existing }
         : {};
       if (!Object.hasOwn(castOutputs, edge.sourceOutput)) {

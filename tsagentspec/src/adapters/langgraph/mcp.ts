@@ -25,22 +25,8 @@ import type { Connection } from "@langchain/mcp-adapters";
 import type { ClientTransport, MCPTool, MCPToolSpec } from "../../mcp/index.js";
 import type { JsonSchemaValue } from "../../property.js";
 import type { MCPToolBox } from "../../tools/index.js";
-import { jsonSchemasHaveSameType } from "../common/index.js";
+import { importOptionalPeer, jsonSchemasHaveSameType } from "../common/index.js";
 import type { ToolRegistry } from "./types.js";
-
-type McpAdaptersModule = typeof import("@langchain/mcp-adapters");
-
-async function importMcpAdaptersModule(): Promise<McpAdaptersModule> {
-  try {
-    return await import("@langchain/mcp-adapters");
-  } catch (error) {
-    throw new Error(
-      "@langchain/mcp-adapters is required to preload MCP tools. " +
-        "Install it (e.g., npm install @langchain/mcp-adapters) or remove MCP tools from the spec.",
-      { cause: error },
-    );
-  }
-}
 
 /**
  * Convert an AgentSpec MCP client transport into a `@langchain/mcp-adapters`
@@ -166,7 +152,12 @@ export async function getOrCreateMcpTools(
     return existing;
   }
 
-  const { MultiServerMCPClient } = await importMcpAdaptersModule();
+  const { MultiServerMCPClient } = await importOptionalPeer(
+    () => import("@langchain/mcp-adapters"),
+    "@langchain/mcp-adapters",
+    "preload MCP tools",
+    "remove MCP tools from the spec.",
+  );
   const serverName = clientTransport.id;
   // The client stays referenced by the loaded tools; it is intentionally not
   // closed here (closing it would break later tool invocations).

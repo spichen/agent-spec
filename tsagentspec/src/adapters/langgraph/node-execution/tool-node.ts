@@ -11,10 +11,9 @@
  */
 import type { BaseMessage } from "@langchain/core/messages";
 import type { ToolNode } from "../../../flows/index.js";
-import { stringifyTemplateValue } from "../../common/index.js";
-import type { ExecuteOutput, NodeOutputs } from "../types.js";
-import type { InvocableGraph } from "./executor.js";
-import { NodeExecutor, isPlainRecord } from "./executor.js";
+import { isRecordLike, stringifyTemplateValue } from "../../common/index.js";
+import type { ExecuteOutput, InvocableGraph, NodeOutputs } from "../types.js";
+import { NodeExecutor } from "./executor.js";
 
 /** True for a list of MCP-style content blocks (text / image / file). */
 function isMcpContentBlocksList(items: unknown[]): boolean {
@@ -23,7 +22,7 @@ function isMcpContentBlocksList(items: unknown[]): boolean {
     return false;
   }
   for (const element of items) {
-    if (!isPlainRecord(element)) {
+    if (!isRecordLike(element)) {
       return false;
     }
     const blockType = element["type"];
@@ -118,7 +117,7 @@ export class ToolNodeExecutor extends NodeExecutor<ToolNode> {
       // property's title: use it as-is to avoid double-wrapping.
       const onlyTitle = nodeOutputProperties[0]!.title;
       if (
-        isPlainRecord(toolOutput) &&
+        isRecordLike(toolOutput) &&
         Object.keys(toolOutput).length === 1 &&
         Object.hasOwn(toolOutput, onlyTitle)
       ) {
@@ -126,7 +125,7 @@ export class ToolNodeExecutor extends NodeExecutor<ToolNode> {
       } else {
         mapped = { [onlyTitle]: toolOutput };
       }
-    } else if (isPlainRecord(toolOutput)) {
+    } else if (isRecordLike(toolOutput)) {
       // The node emits multiple outputs: filter the tool output.
       mapped = {};
       for (const property of nodeOutputProperties) {

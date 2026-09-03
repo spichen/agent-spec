@@ -16,10 +16,17 @@ import {
 } from "../common/index.js";
 import { LangGraphToAgentSpecConverter } from "./agentspec-converter.js";
 import { AgentSpecToLangGraphConverter } from "./langgraph-converter.js";
+import type { ToolRegistry } from "./types.js";
 
 /** Constructor options for the LangGraph `AgentSpecLoader`. */
 export interface AgentSpecLoaderOptions
   extends AdapterAgnosticAgentSpecLoaderOptions {
+  /**
+   * Tool implementations keyed by tool name: LangChain structured tools or
+   * plain (sync or async) functions. Narrows the adapter-agnostic
+   * `Record<string, unknown>` to the LangGraph registry contract.
+   */
+  toolRegistry?: ToolRegistry;
   /**
    * LangGraph checkpointer wired into created graphs; enables features that
    * require one (e.g., client tools and tool confirmation interrupts).
@@ -45,6 +52,8 @@ export interface AgentSpecLoaderOptions
  * runtime components).
  */
 export class AgentSpecLoader extends AdapterAgnosticAgentSpecLoader {
+  /** The LangGraph registry contract for the base loader's registry field. */
+  declare readonly toolRegistry: ToolRegistry;
   /** Checkpointer wired into created graphs. */
   readonly checkpointer?: BaseCheckpointSaver;
   /** RunnableConfig passed to created runnables/graphs. */

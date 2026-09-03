@@ -15,36 +15,7 @@
 import type { BaseChatModel } from "@langchain/core/language_models/chat_models";
 import type { LlmConfig, LlmGenerationConfig } from "../../llms/index.js";
 import { OpenAIAPIType } from "../../llms/index.js";
-
-/** Normalized Agent Spec generation settings supported by the LangGraph adapter. */
-export interface GenerationConfig {
-  temperature?: number;
-  maxTokens?: number;
-  topP?: number;
-}
-
-/**
- * Copy only the generation parameters that are set (temperature, maxTokens,
- * topP) from an Agent Spec `LlmGenerationConfig`.
- */
-export function generationConfigFromAgentSpec(
-  generationParameters: LlmGenerationConfig | undefined,
-): GenerationConfig {
-  const generationConfig: GenerationConfig = {};
-  if (generationParameters === undefined) {
-    return generationConfig;
-  }
-  if (generationParameters.temperature !== undefined) {
-    generationConfig.temperature = generationParameters.temperature;
-  }
-  if (generationParameters.maxTokens !== undefined) {
-    generationConfig.maxTokens = generationParameters.maxTokens;
-  }
-  if (generationParameters.topP !== undefined) {
-    generationConfig.topP = generationParameters.topP;
-  }
-  return generationConfig;
-}
+import { importOptionalPeer } from "../common/index.js";
 
 function ensureUrlHasScheme(url: string): string {
   const trimmed = url.trim();
@@ -75,33 +46,6 @@ export function prepareOpenAiCompatibleUrl(url: string): string {
   return parsed.toString();
 }
 
-type ChatOpenAiModule = typeof import("@langchain/openai");
-type ChatOllamaModule = typeof import("@langchain/ollama");
-
-async function importChatOpenAiModule(): Promise<ChatOpenAiModule> {
-  try {
-    return await import("@langchain/openai");
-  } catch (error) {
-    throw new Error(
-      "@langchain/openai is required to convert OpenAI-compatible LLM configs. " +
-        "Install it (e.g., npm install @langchain/openai) or remove them from the spec.",
-      { cause: error },
-    );
-  }
-}
-
-async function importChatOllamaModule(): Promise<ChatOllamaModule> {
-  try {
-    return await import("@langchain/ollama");
-  } catch (error) {
-    throw new Error(
-      "@langchain/ollama is required to convert OllamaConfig LLM configs. " +
-        "Install it (e.g., npm install @langchain/ollama) or remove them from the spec.",
-      { cause: error },
-    );
-  }
-}
-
 /**
  * Create a ChatOpenAI model without overriding env-based defaults.
  *
@@ -111,11 +55,16 @@ async function importChatOllamaModule(): Promise<ChatOllamaModule> {
 async function createChatOpenAiModel(options: {
   modelId: string;
   useResponsesApi: boolean;
-  generationConfig: GenerationConfig;
+  generationConfig: LlmGenerationConfig;
   baseUrl?: string;
   apiKey?: string;
 }): Promise<BaseChatModel> {
-  const { ChatOpenAI } = await importChatOpenAiModule();
+  const { ChatOpenAI } = await importOptionalPeer(
+    () => import("@langchain/openai"),
+    "@langchain/openai",
+    "convert OpenAI-compatible LLM configs",
+    "remove them from the spec.",
+  );
   // Mirror the Python fallback chain: a MISSING config value falls back to
   // OPENAI_API_KEY -> "EMPTY", but an explicit key (even an empty string) is
   // used as-is — the spec's key must never be silently replaced by the
@@ -145,12 +94,13 @@ async function createChatOpenAiModel(options: {
 export async function convertLlmConfig(
   llmConfig: LlmConfig,
 ): Promise<BaseChatModel> {
-  const generationConfig = generationConfigFromAgentSpec(
-    llmConfig.defaultGenerationParameters,
-  );
+  // Only temperature / maxTokens / topP are supported; each use site reads
+  // the fields individually, so unset ones simply stay undefined.
+  const generationConfig = llmConfig.defaultGenerationParameters ?? {};
 
   switch (llmConfig.componentType) {
     case "VllmConfig":
+    case "OpenAiCompatibleConfig":
       return createChatOpenAiModel({
         modelId: llmConfig.modelId,
         baseUrl: prepareOpenAiCompatibleUrl(llmConfig.url),
@@ -159,7 +109,12 @@ export async function convertLlmConfig(
         generationConfig,
       });
     case "OllamaConfig": {
-      const { ChatOllama } = await importChatOllamaModule();
+      const { ChatOllama } = await importOptionalPeer(
+        () => import("@langchain/ollama"),
+        "@langchain/ollama",
+        "convert OllamaConfig LLM configs",
+        "remove them from the spec.",
+      );
       return new ChatOllama({
         baseUrl: llmConfig.url,
         model: llmConfig.modelId,
@@ -171,14 +126,6 @@ export async function convertLlmConfig(
     case "OpenAiConfig":
       return createChatOpenAiModel({
         modelId: llmConfig.modelId,
-        apiKey: llmConfig.apiKey,
-        useResponsesApi: llmConfig.apiType === OpenAIAPIType.RESPONSES,
-        generationConfig,
-      });
-    case "OpenAiCompatibleConfig":
-      return createChatOpenAiModel({
-        modelId: llmConfig.modelId,
-        baseUrl: prepareOpenAiCompatibleUrl(llmConfig.url),
         apiKey: llmConfig.apiKey,
         useResponsesApi: llmConfig.apiType === OpenAIAPIType.RESPONSES,
         generationConfig,

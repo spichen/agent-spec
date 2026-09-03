@@ -34,17 +34,14 @@ import type {
 import {
   buildJsonSchemaFromProperties,
   createRemoteToolFunc,
+  isRecordLike,
 } from "../common/index.js";
-import type { ToolRegistry } from "./types.js";
+import type { ToolImplementation, ToolRegistry } from "./types.js";
 
 const ALLOWED_DECISIONS = ["approve", "reject"];
 
 /** A tool implementation function: receives the parsed input object. */
-export type ToolFunction = (input: unknown, config?: unknown) => unknown;
-
-function isPlainRecord(value: unknown): value is Record<string, unknown> {
-  return typeof value === "object" && value !== null && !Array.isArray(value);
-}
+export type ToolFunction = ToolImplementation;
 
 /**
  * Merge each declared input property's default into the tool-call input when
@@ -137,7 +134,7 @@ export function confirmToolUse(
   const response = interrupt<typeof confirmationPayload, unknown>(
     confirmationPayload,
   );
-  if (!isPlainRecord(response) || !("decisions" in response)) {
+  if (!isRecordLike(response) || !("decisions" in response)) {
     throw new Error(
       `Tool confirmation result for tool ${toolName} is not valid, should be a ` +
         `dict with a 'decisions' key, was ${JSON.stringify(response)} of type ${typeof response}.`,
@@ -153,7 +150,7 @@ export function confirmToolUse(
   }
   const decision: unknown = decisionList[0];
   if (
-    !isPlainRecord(decision) ||
+    !isRecordLike(decision) ||
     !("type" in decision) ||
     typeof decision["type"] !== "string" ||
     !ALLOWED_DECISIONS.includes(decision["type"])
@@ -187,7 +184,7 @@ export function confirmThen(
     input: unknown,
     config?: unknown,
   ): unknown {
-    const confirmationArguments = isPlainRecord(input)
+    const confirmationArguments = isRecordLike(input)
       ? input
       : { args: [input] };
     const [confirmed, reason] = confirmToolUse(toolName, confirmationArguments);
@@ -270,14 +267,10 @@ export function convertServerTool(
   }
   if (typeof toolObj === "function") {
     const toolInputs = agentspecServerTool.inputs ?? [];
-    const wrapped = confirmThen(
-      toolObj as ToolFunction,
-      toolName,
-      requiresConfirmation,
-    );
+    const wrapped = confirmThen(toolObj, toolName, requiresConfirmation);
     const withDefaults: ToolFunction = (input, config) =>
       wrapped(
-        isPlainRecord(input) ? applyInputDefaults(input, toolInputs) : input,
+        isRecordLike(input) ? applyInputDefaults(input, toolInputs) : input,
         config,
       );
     return tool(withDefaults as (input: unknown) => unknown, {
@@ -302,32 +295,33 @@ export function convertClientTool(
 ): StructuredToolInterface {
   const toolName = agentspecClientTool.name;
   const toolDescription = agentspecClientTool.description ?? "";
-  const requiresConfirmation = agentspecClientTool.requiresConfirmation;
 
-  const clientToolFunc = (kwargs: unknown): unknown => {
-    const kwargsRecord = applyInputDefaults(
-      isPlainRecord(kwargs) ? kwargs : {},
-      agentspecClientTool.inputs ?? [],
-    );
-    if (requiresConfirmation) {
-      const [confirmed, reason] = confirmToolUse(toolName, kwargsRecord);
-      if (!confirmed) {
-        throw new Error(
-          `Tool '${toolName}' was denied by the user (reason: ${reason}).`,
-        );
-      }
-    }
+  const requestClientTool: ToolFunction = (kwargs) => {
     const toolRequest = {
       type: "client_tool_request",
       name: toolName,
       description: toolDescription,
       inputs: {
         args: [] as unknown[],
-        kwargs: kwargsRecord,
+        kwargs: kwargs as Record<string, unknown>,
       },
     };
     return interrupt(toolRequest);
   };
+  // Confirmation composes AFTER default injection, so the confirmation
+  // interrupt sees the defaulted kwargs (like Python's pydantic models).
+  const confirmed = confirmThen(
+    requestClientTool,
+    toolName,
+    agentspecClientTool.requiresConfirmation,
+  );
+  const clientToolFunc = (kwargs: unknown): unknown =>
+    confirmed(
+      applyInputDefaults(
+        isRecordLike(kwargs) ? kwargs : {},
+        agentspecClientTool.inputs ?? [],
+      ),
+    );
 
   // Note: no tool execution callback is attached, matching Python.
   return tool(clientToolFunc, {
@@ -350,14 +344,14 @@ export function convertRemoteTool(
   const toolInputs = agentspecRemoteTool.inputs ?? [];
   const remoteToolFunc = createRemoteToolFunc(agentspecRemoteTool);
   const wrapped = confirmThen(
-    (input: unknown) =>
-      remoteToolFunc(isPlainRecord(input) ? input : {}),
+    // `withDefaults` below always hands over the defaulted kwargs record.
+    (input: unknown) => remoteToolFunc(input as Record<string, unknown>),
     toolName,
     agentspecRemoteTool.requiresConfirmation,
   );
   const withDefaults: ToolFunction = (input, config) =>
     wrapped(
-      applyInputDefaults(isPlainRecord(input) ? input : {}, toolInputs),
+      applyInputDefaults(isRecordLike(input) ? input : {}, toolInputs),
       config,
     );
   return tool(withDefaults as (input: unknown) => unknown, {
