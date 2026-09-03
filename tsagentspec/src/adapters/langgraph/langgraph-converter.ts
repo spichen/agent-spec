@@ -873,7 +873,7 @@ export class AgentSpecToLangGraphConverter {
         if (!isCompiledGraph(subflow)) {
           throw new Error("MapNodeExecutor can only be initialized with MapNode");
         }
-        return new MapNodeExecutor(node, subflow, context.config);
+        return new MapNodeExecutor(node, subflow);
       }
       default:
         throw new Error(

@@ -1119,6 +1119,40 @@ describe("MapNode", () => {
     ).rejects.toThrow("Found inputs to iterate with different sizes");
   });
 
+  it("raises naming the input when an iterated input has no length at runtime", async () => {
+    // The converter selects iterated_input statically (list-typed schema),
+    // but the runtime value is a scalar: the error names the node and the
+    // offending input instead of reusing the size-mismatch text.
+    const mapNode = createMapNode({
+      name: "square_number_map_node",
+      subflow: buildSquareSubflow(),
+      inputs: [iteratedInput],
+      outputs: [collectedSquare],
+    });
+    const inputList = listProperty({
+      title: "input_list",
+      itemType: numberProperty({ title: "item" }),
+    });
+    const start = ioStartNode("outer_start", [inputList]);
+    const end = ioEndNode("outer_end", [collectedSquare]);
+    const flow = createFlow({
+      name: "flow to square all elements of a list",
+      startNode: start,
+      nodes: [start, mapNode, end],
+      controlFlowConnections: [ctrl(start, mapNode), ctrl(mapNode, end)],
+      dataFlowConnections: [
+        dataEdge(start, mapNode, "input_list", "iterated_input"),
+        dataEdge(mapNode, end, "collected_input_square"),
+      ],
+    });
+
+    const graph = await loadFlow(flow, { toolRegistry: squareRegistry });
+    await expect(graph.invoke({ inputs: { input_list: 7 } })).rejects.toThrow(
+      "MapNode `square_number_map_node` cannot iterate over input " +
+        "`iterated_input`: 7 has no length",
+    );
+  });
+
   it("raises when no data-flow edge selects an input to iterate", async () => {
     const mapNode = createMapNode({
       name: "square_map_scalar",
@@ -1347,6 +1381,35 @@ describe("ApiNode", () => {
     expect(headers["X-Trace"]).toBe("on");
     expect(init.body).toBeInstanceOf(URLSearchParams);
     expect(String(init.body)).toBe("a=1&b=static");
+  });
+
+  it("POST: an empty-string Content-Type falls through to the lowercase header (Python `or` parity)", async () => {
+    // Python looks the content type up with `get("Content-Type") or
+    // get("content-type")`: an empty-string uppercase header is falsy, so
+    // the lowercase urlencoded header wins and dict data goes out as a form
+    // body (a `??` lookup would stop at the empty string and send JSON).
+    const echo = stringProperty({ title: "echo" });
+    const apiNode = createApiNode({
+      name: "api",
+      url: "https://api.example.com/form",
+      httpMethod: "POST",
+      data: { a: "1" },
+      headers: {
+        "Content-Type": "",
+        "content-type": "application/x-www-form-urlencoded",
+      },
+      outputs: [echo],
+    });
+    const flow = buildApiFlow(apiNode, [], [echo]);
+    const graph = await loadFlow(flow);
+
+    mockFetch = installMockFetch(() => ({ echo: "done" }));
+    const result = await graph.invoke({ inputs: {} });
+
+    expect(outputsOf(result)).toEqual({ echo: "done" });
+    const init = mockFetch.calls[0]!.init!;
+    expect(init.body).toBeInstanceOf(URLSearchParams);
+    expect(String(init.body)).toBe("a=1");
   });
 
   it("does not follow redirects: a 3xx response body maps to the node outputs like any status", async () => {

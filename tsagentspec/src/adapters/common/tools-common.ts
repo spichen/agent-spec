@@ -1,6 +1,9 @@
 /**
- * Shared RemoteTool execution helper. Port of
- * `pyagentspec.adapters._tools_common._create_remote_tool_func`.
+ * Shared templated-HTTP-request assembly and RemoteTool execution helpers.
+ * Port of `pyagentspec.adapters._tools_common._create_remote_tool_func`; the
+ * request assembly (`buildTemplatedHttpRequest`) is also the one Python
+ * spells out a second time in `ApiNodeExecutor` (`_node_execution.py`) and is
+ * shared here with the LangGraph ApiNode executor.
  *
  * Divergences from Python (see the adapter README):
  * - The TS SDK RemoteTool has no `retryPolicy`, so a single fetch attempt is
@@ -11,7 +14,7 @@
  *   helpers are invoked with `undefined` (i.e. allow) and the templated-URL
  *   warning fires per the Python rules.
  * - `fetch` forbids request bodies on GET/HEAD, so no body is sent for those
- *   methods.
+ *   methods (reported via `bodyDropped`).
  *
  * Python-parity network behavior (NOT divergences): redirects are not
  * followed and requests time out after `DEFAULT_HTTP_REQUEST_TIMEOUT_MS`,
@@ -86,7 +89,12 @@ export async function fetchWithAdapterDefaults(
   }
 }
 
-function renderRecord(
+/**
+ * Render `{{placeholder}}` templates in both the keys and the values of a
+ * record (header/query-param maps), like Python's dict comprehensions over
+ * `render_template(k)` / `render_nested_object_template(v)`.
+ */
+export function renderRecord(
   record: Record<string, unknown>,
   kwargs: Record<string, unknown>,
 ): Record<string, unknown> {
@@ -98,6 +106,136 @@ function renderRecord(
     );
   }
   return rendered;
+}
+
+/**
+ * The structural surface shared by the AgentSpec `RemoteTool` and `ApiNode`
+ * components: a templated HTTP request specification.
+ */
+export interface TemplatedHttpRequestSpec {
+  url: string;
+  httpMethod: string;
+  data?: unknown;
+  headers: Record<string, unknown>;
+  queryParams: Record<string, unknown>;
+}
+
+/**
+ * Assemble one HTTP request from a templated spec and the call inputs:
+ * renders `{{placeholder}}` templates in the URL, data, headers and query
+ * parameters, stringifies header values, validates the rendered URL against
+ * the allow list (a seam — the TS SDK has no `urlAllowList` field yet, so
+ * this always allows), encodes the body (an urlencoded form for dict data
+ * under an urlencoded content type, raw strings/bytes verbatim, JSON
+ * otherwise — adding the JSON content type unless the caller set one), and
+ * appends the rendered query parameters to the URL.
+ *
+ * Mirrors the request assembly Python spells out identically in
+ * `_create_remote_tool_func` (`_tools_common.py`) and `ApiNodeExecutor`
+ * (`_node_execution.py`).
+ *
+ * `bodyDropped` reports the one fetch-forced divergence: `fetch` forbids
+ * request bodies on GET/HEAD (Python's httpx sends them), so declared
+ * non-empty data is not sent for those methods and the flag is returned for
+ * the caller to surface (the ApiNode executor warns; the RemoteTool path
+ * keeps Python's silence).
+ */
+export function buildTemplatedHttpRequest(
+  spec: TemplatedHttpRequestSpec,
+  inputs: Record<string, unknown>,
+): { url: string; init: RequestInit; bodyDropped: boolean } {
+  const renderedData = renderNestedObjectTemplate(spec.data, inputs);
+  const renderedHeaders = renderRecord(spec.headers, inputs);
+  const renderedQueryParams = renderRecord(spec.queryParams, inputs);
+  const renderedUrl = renderTemplate(spec.url, inputs);
+
+  // Falsy (`||`) coalescing on purpose, matching Python's
+  // `headers.get("Content-Type") or headers.get("content-type")`: an
+  // empty-string `Content-Type` falls through to the lowercase header.
+  const contentTypeHeader =
+    renderedHeaders["Content-Type"] || renderedHeaders["content-type"];
+  const expectUrlencodedFormData =
+    typeof contentTypeHeader === "string" &&
+    contentTypeHeader.includes("application/x-www-form-urlencoded");
+
+  const requestHeaders: Record<string, string> = {};
+  for (const [key, value] of Object.entries(renderedHeaders)) {
+    requestHeaders[key] =
+      typeof value === "string" ? value : stringifyTemplateValue(value);
+  }
+  const callerSetContentType = Object.keys(requestHeaders).some(
+    (key) => key.toLowerCase() === "content-type",
+  );
+
+  const method = spec.httpMethod;
+  const methodUpper = method.toUpperCase();
+  // fetch forbids request bodies on GET/HEAD (Python's httpx sends them).
+  const methodAllowsBody = methodUpper !== "GET" && methodUpper !== "HEAD";
+  const hasDeclaredBody =
+    renderedData !== undefined &&
+    renderedData !== null &&
+    renderedData !== "" &&
+    !(isPlainRecord(renderedData) && Object.keys(renderedData).length === 0);
+
+  let body: string | URLSearchParams | Uint8Array | undefined;
+  if (methodAllowsBody) {
+    if (expectUrlencodedFormData && isPlainRecord(renderedData)) {
+      const form = new URLSearchParams();
+      for (const [key, value] of Object.entries(renderedData)) {
+        form.append(
+          key,
+          typeof value === "string" ? value : stringifyTemplateValue(value),
+        );
+      }
+      body = form;
+    } else if (typeof renderedData === "string") {
+      body = renderedData;
+    } else if (renderedData instanceof Uint8Array) {
+      body = renderedData;
+    } else if (renderedData !== undefined && renderedData !== null) {
+      body = JSON.stringify(renderedData);
+      if (!callerSetContentType) {
+        requestHeaders["Content-Type"] = "application/json";
+      }
+    }
+  }
+
+  // Kept as the seam for allow-list enforcement: neither the TS SDK
+  // RemoteTool nor the ApiNode has a urlAllowList field yet, so this always
+  // allows.
+  validateUrlAgainstAllowList(renderedUrl, undefined);
+
+  const searchParams = new URLSearchParams();
+  for (const [key, value] of Object.entries(renderedQueryParams)) {
+    if (Array.isArray(value)) {
+      for (const item of value) {
+        searchParams.append(
+          key,
+          item == null ? "" : stringifyTemplateValue(item),
+        );
+      }
+    } else {
+      searchParams.append(
+        key,
+        value == null ? "" : stringifyTemplateValue(value),
+      );
+    }
+  }
+  const query = searchParams.toString();
+  const requestUrl =
+    query.length > 0
+      ? `${renderedUrl}${renderedUrl.includes("?") ? "&" : "?"}${query}`
+      : renderedUrl;
+
+  return {
+    url: requestUrl,
+    init: {
+      method,
+      headers: requestHeaders,
+      ...(body !== undefined ? { body } : {}),
+    },
+    bodyDropped: !methodAllowsBody && hasDeclaredBody,
+  };
 }
 
 /**
@@ -122,86 +260,10 @@ export function createRemoteToolFunc(
   return async function remoteToolFunc(
     kwargs: Record<string, unknown>,
   ): Promise<unknown> {
-    const remoteToolData = renderNestedObjectTemplate(remoteTool.data, kwargs);
-    const remoteToolHeaders = renderRecord(remoteTool.headers, kwargs);
-    const remoteToolQueryParams = renderRecord(remoteTool.queryParams, kwargs);
-    const remoteToolUrl = renderTemplate(remoteTool.url, kwargs);
-
-    const contentTypeHeader =
-      remoteToolHeaders["Content-Type"] || remoteToolHeaders["content-type"];
-    const expectUrlencodedFormData =
-      typeof contentTypeHeader === "string" &&
-      contentTypeHeader.includes("application/x-www-form-urlencoded");
-
-    const requestHeaders: Record<string, string> = {};
-    for (const [key, value] of Object.entries(remoteToolHeaders)) {
-      requestHeaders[key] =
-        typeof value === "string" ? value : stringifyTemplateValue(value);
-    }
-    const callerSetContentType = Object.keys(requestHeaders).some(
-      (key) => key.toLowerCase() === "content-type",
-    );
-
-    const method = remoteTool.httpMethod;
-    const methodUpper = method.toUpperCase();
-    const methodAllowsBody = methodUpper !== "GET" && methodUpper !== "HEAD";
-
-    let body: string | URLSearchParams | Uint8Array | undefined;
-    if (methodAllowsBody) {
-      if (expectUrlencodedFormData && isPlainRecord(remoteToolData)) {
-        const form = new URLSearchParams();
-        for (const [key, value] of Object.entries(remoteToolData)) {
-          form.append(
-            key,
-            typeof value === "string" ? value : stringifyTemplateValue(value),
-          );
-        }
-        body = form;
-      } else if (typeof remoteToolData === "string") {
-        body = remoteToolData;
-      } else if (remoteToolData instanceof Uint8Array) {
-        body = remoteToolData;
-      } else if (remoteToolData !== undefined && remoteToolData !== null) {
-        body = JSON.stringify(remoteToolData);
-        if (!callerSetContentType) {
-          requestHeaders["Content-Type"] = "application/json";
-        }
-      }
-    }
-
-    // Kept as the seam for allow-list enforcement: the TS SDK RemoteTool has
-    // no urlAllowList field yet, so this always allows.
-    validateUrlAgainstAllowList(remoteToolUrl, undefined);
-
-    const searchParams = new URLSearchParams();
-    for (const [key, value] of Object.entries(remoteToolQueryParams)) {
-      if (Array.isArray(value)) {
-        for (const item of value) {
-          searchParams.append(
-            key,
-            item == null ? "" : stringifyTemplateValue(item),
-          );
-        }
-      } else {
-        searchParams.append(
-          key,
-          value == null ? "" : stringifyTemplateValue(value),
-        );
-      }
-    }
-    const query = searchParams.toString();
-    const requestUrl =
-      query.length > 0
-        ? `${remoteToolUrl}${remoteToolUrl.includes("?") ? "&" : "?"}${query}`
-        : remoteToolUrl;
-
+    const { url, init } = buildTemplatedHttpRequest(remoteTool, kwargs);
     const response = await fetchWithAdapterDefaults(
-      requestUrl,
-      {
-        method,
-        headers: requestHeaders,
-        ...(body !== undefined ? { body } : {}),
-      },
+      url,
+      init,
       `RemoteTool \`${remoteTool.name}\``,
     );
     // Python (with no retry policy — the only state the TS RemoteTool can

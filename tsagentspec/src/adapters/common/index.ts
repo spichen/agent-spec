@@ -29,8 +29,11 @@ export {
 } from "./json-schema.js";
 export {
   DEFAULT_HTTP_REQUEST_TIMEOUT_MS,
+  buildTemplatedHttpRequest,
   createRemoteToolFunc,
   fetchWithAdapterDefaults,
+  renderRecord,
+  type TemplatedHttpRequestSpec,
 } from "./tools-common.js";
 export type {
   AgentSpecToRuntimeConverter,
