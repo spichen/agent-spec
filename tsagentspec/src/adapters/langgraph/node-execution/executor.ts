@@ -13,14 +13,21 @@
  * - Executors receive their collaborators from the converter (converted
  *   tools, chat models, compiled subgraphs, agent compile factories) instead
  *   of importing the converter, so there are no module cycles.
- * - Node execution spans/events are not emitted (tracing is a no-op seam).
+ * - The node execution span runs in a forked ambient context (`Span.run`),
+ *   so parallel graph branches keep isolated span stacks where Python
+ *   relies on `copy_context` snapshots.
  */
 import type { BaseMessage } from "@langchain/core/messages";
 import type { RunnableConfig } from "@langchain/core/runnables";
 import { addMessages } from "@langchain/langgraph";
-import type { DataFlowEdge } from "../../../flows/index.js";
+import type { DataFlowEdge, Node } from "../../../flows/index.js";
 import { DEFAULT_NEXT_BRANCH } from "../../../flows/index.js";
 import type { Property } from "../../../property.js";
+import {
+  NodeExecutionEnd,
+  NodeExecutionSpan,
+  NodeExecutionStart,
+} from "../../../tracing/index.js";
 import { isRecordLike } from "../../common/index.js";
 import type {
   ExecuteOutput,
@@ -35,6 +42,8 @@ import { castValuesAndAddDefaults } from "./python-parity.js";
 export interface FlowNodeLike {
   id: string;
   name: string;
+  /** The node's Agent Spec type (Python's `type(node).__name__`), used in span names. */
+  componentType: string;
   inputs?: Property[];
   outputs?: Property[];
 }
@@ -62,14 +71,41 @@ export abstract class NodeExecutor<
     this.edges.push(edge);
   }
 
-  /** Execute this node against the current flow state (LangGraph node fn). */
+  /**
+   * Execute this node against the current flow state (LangGraph node fn),
+   * inside a `NodeExecutionSpan` with start/end events (Python's
+   * `NodeExecutor.__acall__`). An error thrown by the node records an
+   * ExceptionRaised event on the span before propagating.
+   */
   async call(state: FlowState, _config?: RunnableConfig): Promise<FlowState> {
     const inputs = this.getInputs(state);
-    const [outputs, executionDetails] = await this._execute(
-      inputs,
-      state.messages ?? [],
-    );
-    return this.updateStatus(outputs, executionDetails, state);
+    const spanName = `${this.node.componentType}Execution[${this.node.name}]`;
+    const span = new NodeExecutionSpan({
+      name: spanName,
+      node: this.node as unknown as Node,
+    });
+    return span.run(async () => {
+      await span.addEvent(
+        new NodeExecutionStart({
+          node: this.node as unknown as Node,
+          inputs,
+        }),
+      );
+      const [outputs, executionDetails] = await this._execute(
+        inputs,
+        state.messages ?? [],
+      );
+      const updatedStatus = this.updateStatus(outputs, executionDetails, state);
+      await span.addEvent(
+        new NodeExecutionEnd({
+          node: this.node as unknown as Node,
+          outputs: updatedStatus.outputs,
+          branchSelected:
+            updatedStatus.node_execution_details.branch ?? DEFAULT_NEXT_BRANCH,
+        }),
+      );
+      return updatedStatus;
+    });
   }
 
   /** Execute the node with the given cast inputs; returns outputs + details. */

@@ -20,10 +20,10 @@
  *   schema (`Annotation.Root` is silently ignored by the JS `createAgent`);
  *   the langchain JS agent state has no `remaining_steps` channel, so no such
  *   key is added.
- * - No tracing callbacks/spans are attached; `patchWithExecutionSpan` is an
- *   identity seam invoked at the same graph-compilation sites as Python with
- *   the compiled-from component, while LLM/tool callback attachment has no
- *   seam at all (see `tracing.ts`).
+ * - `patchWithExecutionSpan` wraps the compiled graph through a Proxy at the
+ *   same graph-compilation sites as Python (which monkey-patches
+ *   stream/astream in place); LLM/tool tracing callbacks are attached where
+ *   Python attaches them (see `tracing.ts` for the divergences).
  * - Python's "async interrupts on Python < 3.11" load-time warning has no JS
  *   equivalent and is not ported.
  */

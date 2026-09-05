@@ -18,8 +18,10 @@
  *   (JS is async-native).
  * - Interpolated values in mirrored error/interrupt messages are rendered with
  *   `JSON.stringify` instead of Python's `repr`.
- * - No tracing callbacks are attached (tracing is a no-op seam in v1).
+ * - The `tool()` factory's runtime `callbacks` field is untyped, so the
+ *   tracing-handler attachment goes through a small typed helper.
  */
+import type { BaseCallbackHandler } from "@langchain/core/callbacks/base";
 import type { StructuredToolInterface } from "@langchain/core/tools";
 import { isStructuredTool, tool } from "@langchain/core/tools";
 import type { BaseCheckpointSaver } from "@langchain/langgraph";
@@ -36,9 +38,33 @@ import {
   createRemoteToolFunc,
   isRecordLike,
 } from "../common/index.js";
+import { AgentSpecToolCallbackHandler } from "./tracing.js";
 import type { ToolImplementation, ToolRegistry } from "./types.js";
 
 const ALLOWED_DECISIONS = ["approve", "reject"];
+
+/**
+ * Create a LangChain structured tool carrying the Agent Spec tool tracing
+ * handler. The `tool()` factory accepts `callbacks` at runtime but its
+ * current typings do not declare the field, hence the options cast.
+ */
+function toolWithTracingCallback(
+  func: (input: unknown) => unknown,
+  options: {
+    name: string;
+    description?: string;
+    schema: unknown;
+  },
+  agentspecTool: Tool,
+): StructuredToolInterface {
+  const callbacks: BaseCallbackHandler[] = [
+    new AgentSpecToolCallbackHandler(agentspecTool),
+  ];
+  return tool(func, {
+    ...options,
+    callbacks,
+  } as unknown as Parameters<typeof tool>[1]) as StructuredToolInterface;
+}
 
 /** A tool implementation function: receives the parsed input object. */
 export type ToolFunction = ToolImplementation;
@@ -259,11 +285,15 @@ export function convertServerTool(
       toolName,
       requiresConfirmation,
     );
-    return tool(wrapped as (input: unknown) => unknown, {
-      name: registeredTool.name,
-      description: registeredTool.description,
-      schema: registeredTool.schema,
-    }) as StructuredToolInterface;
+    return toolWithTracingCallback(
+      wrapped as (input: unknown) => unknown,
+      {
+        name: registeredTool.name,
+        description: registeredTool.description,
+        schema: registeredTool.schema,
+      },
+      agentspecServerTool,
+    );
   }
   if (typeof toolObj === "function") {
     const toolInputs = agentspecServerTool.inputs ?? [];
@@ -273,11 +303,15 @@ export function convertServerTool(
         isRecordLike(input) ? applyInputDefaults(input, toolInputs) : input,
         config,
       );
-    return tool(withDefaults as (input: unknown) => unknown, {
-      name: toolName,
-      description: toolDescription,
-      schema: buildArgsSchema(toolName, toolInputs),
-    }) as StructuredToolInterface;
+    return toolWithTracingCallback(
+      withDefaults as (input: unknown) => unknown,
+      {
+        name: toolName,
+        description: toolDescription,
+        schema: buildArgsSchema(toolName, toolInputs),
+      },
+      agentspecServerTool,
+    );
   }
   throw new Error(
     `Unsupported tool type for '${toolName}': ${typeof toolObj}. ` +
@@ -354,9 +388,13 @@ export function convertRemoteTool(
       applyInputDefaults(isRecordLike(input) ? input : {}, toolInputs),
       config,
     );
-  return tool(withDefaults as (input: unknown) => unknown, {
-    name: toolName,
-    description: toolDescription,
-    schema: buildArgsSchema(toolName, toolInputs),
-  }) as StructuredToolInterface;
+  return toolWithTracingCallback(
+    withDefaults as (input: unknown) => unknown,
+    {
+      name: toolName,
+      description: toolDescription,
+      schema: buildArgsSchema(toolName, toolInputs),
+    },
+    agentspecRemoteTool,
+  );
 }

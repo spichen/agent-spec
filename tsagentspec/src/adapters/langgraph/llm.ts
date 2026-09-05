@@ -11,13 +11,14 @@
  *   client takes seconds), so `RetryPolicy.requestTimeout` (seconds) is
  *   multiplied by 1000.
  * - OciGenAiConfig is not supported (no langchain-oci package for JS).
- * - No tracing callbacks are attached here (tracing is a no-op seam in v1).
  */
+import type { BaseCallbackHandler } from "@langchain/core/callbacks/base";
 import type { BaseChatModel } from "@langchain/core/language_models/chat_models";
 import type { LlmConfig, LlmGenerationConfig } from "../../llms/index.js";
 import { OpenAIAPIType } from "../../llms/index.js";
 import { RetryPolicySchema, type RetryPolicy } from "../../retry-policy.js";
 import { importOptionalPeer } from "../common/index.js";
+import { AgentSpecLlmCallbackHandler } from "./tracing.js";
 
 function ensureUrlHasScheme(url: string): string {
   const trimmed = url.trim();
@@ -149,6 +150,7 @@ async function createChatOpenAiModel(options: {
   useResponsesApi: boolean;
   generationConfig: LlmGenerationConfig;
   retryConfig: ChatRetryConfig;
+  callbacks: BaseCallbackHandler[];
   baseUrl?: string;
   apiKey?: string;
 }): Promise<BaseChatModel> {
@@ -168,6 +170,7 @@ async function createChatOpenAiModel(options: {
     model: options.modelId,
     useResponsesApi: options.useResponsesApi,
     apiKey,
+    callbacks: options.callbacks,
     temperature: options.generationConfig.temperature,
     maxTokens: options.generationConfig.maxTokens,
     topP: options.generationConfig.topP,
@@ -202,6 +205,13 @@ export async function convertLlmConfig(
   // the fields individually, so unset ones simply stay undefined.
   const generationConfig = llmConfig.defaultGenerationParameters ?? {};
 
+  // Every chat model the converter creates carries the Agent Spec LLM
+  // tracing handler (Python parity; the unsupported OCI branch is the one
+  // Python site without callbacks).
+  const callbacks: BaseCallbackHandler[] = [
+    new AgentSpecLlmCallbackHandler(llmConfig),
+  ];
+
   switch (llmConfig.componentType) {
     case "VllmConfig":
     case "OpenAiCompatibleConfig":
@@ -212,6 +222,7 @@ export async function convertLlmConfig(
         useResponsesApi: llmConfig.apiType === OpenAIAPIType.RESPONSES,
         generationConfig,
         retryConfig: retryPolicyConvertToLanggraph(llmConfig.retryPolicy),
+        callbacks,
       });
     case "OllamaConfig": {
       if (llmConfig.retryPolicy != null) {
@@ -228,6 +239,7 @@ export async function convertLlmConfig(
       return new ChatOllama({
         baseUrl: llmConfig.url,
         model: llmConfig.modelId,
+        callbacks,
         temperature: generationConfig.temperature,
         numPredict: generationConfig.maxTokens,
         topP: generationConfig.topP,
@@ -240,6 +252,7 @@ export async function convertLlmConfig(
         useResponsesApi: llmConfig.apiType === OpenAIAPIType.RESPONSES,
         generationConfig,
         retryConfig: retryPolicyConvertToLanggraph(llmConfig.retryPolicy),
+        callbacks,
       });
     case "LlmConfig": {
       // Bare LlmConfig — dispatch on the api_provider string, like Python.
@@ -255,6 +268,7 @@ export async function convertLlmConfig(
           useResponsesApi: llmConfig.apiType === "responses",
           generationConfig,
           retryConfig: retryPolicyConvertToLanggraph(llmConfig.retryPolicy),
+          callbacks,
         });
       }
       throw new Error(

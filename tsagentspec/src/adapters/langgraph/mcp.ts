@@ -17,15 +17,24 @@
  * - Tools are loaded through a `MultiServerMCPClient` that keeps its
  *   connection open for the lifetime of the loaded tools (Python opens a
  *   fresh MCP session per tool call).
- * - No tracing callbacks are attached to loaded tools (tracing is a no-op
- *   seam in v1).
+ * - The tracing handler is attached after the loaded-tool names are
+ *   validated for the registry (Python attaches first); the synthesized
+ *   MCPTool needs a valid tool name either way.
  */
+import type { BaseCallbackHandler } from "@langchain/core/callbacks/base";
 import type { StructuredToolInterface } from "@langchain/core/tools";
 import type { Connection } from "@langchain/mcp-adapters";
+import { createMCPTool } from "../../mcp/index.js";
 import type { ClientTransport, MCPTool, MCPToolSpec } from "../../mcp/index.js";
-import type { JsonSchemaValue } from "../../property.js";
+import {
+  propertyFromJsonSchema,
+  stringProperty,
+  type JsonSchemaValue,
+  type Property,
+} from "../../property.js";
 import type { MCPToolBox } from "../../tools/index.js";
 import { importOptionalPeer, jsonSchemasHaveSameType } from "../common/index.js";
+import { AgentSpecToolCallbackHandler } from "./tracing.js";
 import type { ToolRegistry } from "./types.js";
 
 /**
@@ -114,6 +123,58 @@ function getSessionToolsFromToolRegistry(
   return sessionTools;
 }
 
+/** The declared input properties of a loaded LangChain MCP tool (its JSON-schema `properties`). */
+function loadedMcpToolInputs(loadedTool: StructuredToolInterface): Property[] {
+  const schema = (loadedTool as { schema?: unknown }).schema;
+  const properties =
+    typeof schema === "object" &&
+    schema !== null &&
+    !Array.isArray(schema) &&
+    typeof (schema as JsonSchemaValue)["properties"] === "object" &&
+    (schema as JsonSchemaValue)["properties"] !== null
+      ? ((schema as JsonSchemaValue)["properties"] as Record<
+          string,
+          JsonSchemaValue
+        >)
+      : {};
+  return Object.entries(properties).map(([argName, argJsonSchema]) =>
+    propertyFromJsonSchema({ ...argJsonSchema, title: argName }),
+  );
+}
+
+/**
+ * Attach the Agent Spec tool tracing handler to every loaded MCP tool,
+ * synthesizing an `MCPTool` definition on the fly (toolbox members may have
+ * no spec-side definition), mirroring Python's
+ * `_get_or_create_langgraph_mcp_tools` callback wiring. The synthesized tool
+ * declares the single `tool_output` string output like Python.
+ */
+function attachTracingCallbacks(
+  tools: StructuredToolInterface[],
+  clientTransport: ClientTransport,
+): void {
+  for (const loadedTool of tools) {
+    const agentspecTool = createMCPTool({
+      name: loadedTool.name,
+      description: loadedTool.description ?? "",
+      clientTransport,
+      inputs: loadedMcpToolInputs(loadedTool),
+      outputs: [stringProperty({ title: "tool_output" })],
+    });
+    const mutableTool = loadedTool as { callbacks?: unknown };
+    const existingCallbacks: unknown[] =
+      mutableTool.callbacks === undefined || mutableTool.callbacks === null
+        ? []
+        : Array.isArray(mutableTool.callbacks)
+          ? mutableTool.callbacks
+          : [mutableTool.callbacks];
+    existingCallbacks.push(
+      new AgentSpecToolCallbackHandler(agentspecTool) as BaseCallbackHandler,
+    );
+    mutableTool.callbacks = existingCallbacks;
+  }
+}
+
 function addSessionToolsToRegistry(
   toolRegistry: ToolRegistry,
   tools: StructuredToolInterface[],
@@ -174,6 +235,9 @@ export async function getOrCreateMcpTools(
   const tools = await client.getTools(serverName);
 
   addSessionToolsToRegistry(toolRegistry, tools, connPrefix);
+  // Add tracing callbacks to the loaded tools (after registry-name
+  // validation, so a nameless tool keeps its registry error).
+  attachTracingCallbacks(tools, clientTransport);
 
   return getSessionToolsFromToolRegistry(toolRegistry, connPrefix);
 }

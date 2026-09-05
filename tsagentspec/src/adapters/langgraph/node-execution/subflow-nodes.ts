@@ -6,10 +6,6 @@
  * `pyagentspec.adapters.langgraph._node_execution`. Runtime contracts (state
  * keys, branch names, error-message text) mirror the Python adapter exactly
  * so specs behave the same across both SDKs.
- *
- * Divergence from Python (see the adapter README): node execution
- * spans/events are not emitted (tracing is a no-op seam), so the
- * CatchExceptionNode emits no ExceptionRaised event on error.
  */
 import type { BaseMessage } from "@langchain/core/messages";
 import type { RunnableConfig } from "@langchain/core/runnables";
@@ -23,6 +19,10 @@ import {
   DEFAULT_NEXT_BRANCH,
 } from "../../../flows/index.js";
 import type { Property } from "../../../property.js";
+import {
+  exceptionRaisedFromError,
+  getCurrentSpan,
+} from "../../../tracing/index.js";
 import { isRecordLike, stringifyTemplateValue } from "../../common/index.js";
 import type {
   ExecuteOutput,
@@ -105,8 +105,14 @@ export class CatchExceptionNodeExecutor extends NodeExecutor<CatchExceptionNode>
         | undefined;
       return [outputs, { branch: details?.branch ?? DEFAULT_NEXT_BRANCH }];
     } catch (error) {
-      // Python emits an ExceptionRaised event on the current node span here;
-      // tracing is a no-op seam in the TS adapter, so nothing is emitted.
+      // On exception: record it on the ambient span (this node's
+      // NodeExecutionSpan) and return the default subflow outputs with the
+      // exception message on the caught_exception_branch, mirroring Python.
+      const currentSpan = getCurrentSpan();
+      if (currentSpan !== undefined) {
+        await currentSpan.addEvent(exceptionRaisedFromError(error));
+      }
+      // Python logs a debug message when no span is active; nothing to do.
       const defaultOutputs: NodeOutputs = {};
       const subflowOutputs =
         (this.node.subflow["outputs"] as Property[] | undefined) ?? [];
