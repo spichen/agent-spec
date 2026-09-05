@@ -37,6 +37,7 @@ const MODEL_OBJECT_FIELDS: Record<string, ModelObjectFieldConfig> = {
   },
   endpoints: { excludeNulls: false }, // OAuthEndpoints
   pkce: { excludeNulls: false }, // PKCEPolicy
+  sessionParameters: { excludeNulls: false }, // SessionParameters
 };
 
 function hasSerializedSensitiveValue(value: unknown): boolean {

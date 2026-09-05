@@ -6,6 +6,8 @@ import {
   createStreamableHTTPTransport,
   createStreamableHTTPmTLSTransport,
   createRemoteTransport,
+  AgentSpecSerializer,
+  AgentSpecDeserializer,
 } from "../../src/index.js";
 
 describe("StdioTransport", () => {
@@ -136,5 +138,41 @@ describe("RemoteTransport", () => {
     });
     expect(t.retryPolicy?.maxAttempts).toBe(5);
     expect(t.retryPolicy?.backoffFactor).toBe(2.0);
+  });
+});
+
+describe("SessionParameters wire format", () => {
+  it("serializes readTimeoutSeconds under Python's snake_case key", () => {
+    const transport = createStreamableHTTPTransport({
+      name: "t",
+      url: "https://mcp.example.com",
+      sessionParameters: { readTimeoutSeconds: 42 },
+    });
+
+    const dumped = JSON.parse(
+      new AgentSpecSerializer().toJson(transport),
+    ) as { session_parameters: Record<string, unknown> };
+
+    expect(dumped.session_parameters).toEqual({ read_timeout_seconds: 42 });
+  });
+
+  it("reads a Python-authored session_parameters block", () => {
+    // A non-default read timeout must survive the crossing, not silently
+    // fall back to the 60s default.
+    const pythonWire = JSON.stringify({
+      component_type: "StreamableHTTPTransport",
+      agentspec_version: "26.4.0",
+      id: "11111111-1111-1111-1111-111111111111",
+      name: "t",
+      metadata: {},
+      session_parameters: { read_timeout_seconds: 42.0 },
+      url: "https://mcp.example.com",
+    });
+
+    const transport = new AgentSpecDeserializer().fromJson(pythonWire) as {
+      sessionParameters: { readTimeoutSeconds: number };
+    };
+
+    expect(transport.sessionParameters.readTimeoutSeconds).toBe(42);
   });
 });

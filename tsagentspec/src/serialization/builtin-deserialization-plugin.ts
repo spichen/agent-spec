@@ -40,6 +40,7 @@ const MODEL_OBJECT_FIELDS = new Set([
   "retryPolicy",
   "endpoints", // OAuthEndpoints
   "pkce", // PKCEPolicy
+  "sessionParameters", // SessionParameters
 ]);
 
 /** Deserialize a jsonSchema dict into a Property */
