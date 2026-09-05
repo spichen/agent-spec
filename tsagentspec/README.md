@@ -9,10 +9,13 @@ These types round-trip correctly between JSON/YAML and TypeScript objects:
 - **Agents**: `Agent`, `Swarm`, `ManagerWorkers`, `RemoteAgent`, `SpecializedAgent`, `A2AAgent`
 - **Flows**: `Flow`, `StartNode`, `EndNode`, `LlmNode`, `ToolNode`, `AgentNode`, `FlowNode`, `BranchingNode`, `MapNode`, `ParallelMapNode`, `ParallelFlowNode`, `ApiNode`, `InputMessageNode`, `OutputMessageNode`, `CatchExceptionNode`
 - **Tools**: `ServerTool`, `ClientTool`, `RemoteTool`, `BuiltinTool`, `MCPTool`
-- **LLM configs**: `OpenAiCompatibleConfig`, `OllamaConfig`, `VllmConfig`, `OpenAiConfig`, `OciGenAiConfig`
+- **LLM configs**: `OpenAiCompatibleConfig`, `OllamaConfig`, `VllmConfig`, `OpenAiConfig`, `OciGenAiConfig`, bare `LlmConfig`
 - **MCP**: `MCPToolBox`, `StdioTransport`, `SSETransport`, `StreamableHTTPTransport` (and mTLS variants)
+- **Auth**: `OAuthConfig`, `OAuthClientConfig` (the `auth` field on remote MCP transports)
 - **Datastores**: `InMemoryCollectionDatastore`, `OracleDatabaseDatastore`, `PostgresDatabaseDatastore`
 - **Other**: `ControlFlowEdge`, `DataFlowEdge`, `MessageSummarizationTransform`, `ConversationSummarizationTransform`
+
+Non-component configuration objects nested in the above — `RetryPolicy` (on `RemoteTool`, `ApiNode`, MCP tools/transports, and the LLM configs) and `urlAllowList` (on `RemoteTool` and `ApiNode`) — round-trip with the same version-gated serialization as pyagentspec.
 
 ### Fixture compatibility
 
@@ -56,7 +59,7 @@ The LangChain packages are optional peer dependencies of this SDK; install the o
 | Packages | Needed for |
 |---|---|
 | `langchain`, `@langchain/langgraph`, `@langchain/core` | always (loader/exporter core) |
-| `@langchain/openai` | `OpenAiConfig`, `OpenAiCompatibleConfig`, `VllmConfig` |
+| `@langchain/openai` | `OpenAiConfig`, `OpenAiCompatibleConfig`, `VllmConfig`, bare `LlmConfig` |
 | `@langchain/ollama` | `OllamaConfig` |
 | `@langchain/mcp-adapters` | `MCPTool`, `MCPToolBox` |
 | `@langchain/langgraph-swarm` | `Swarm` |
@@ -122,6 +125,29 @@ const yaml = exporter.toYaml(compiledGraph) as string; // also: toJson, toDict, 
 | `OllamaConfig` | `ChatOllama` (rejects `retryPolicy`, like Python) |
 
 `ParallelMapNode` and `ParallelFlowNode` are not supported and raise an error.
+
+### Tracing
+
+Loaded graphs emit Agent Spec traces. Register a `SpanProcessor` by running the graph inside a `Trace`:
+
+```ts
+import { SpanProcessor, Trace } from "agentspec";
+import type { Event, Span } from "agentspec";
+
+class ConsoleSpanProcessor extends SpanProcessor {
+  onStart(span: Span) {}
+  onEnd(span: Span) { console.log("span", span.serialize()); }
+  onEvent(event: Event, span: Span) { console.log("event", event.serialize()); }
+  startup() {}
+  shutdown() {}
+}
+
+await new Trace({ spanProcessors: [new ConsoleSpanProcessor()] }).run(() =>
+  agent.invoke({ messages: [{ role: "user", content: "..." }] }),
+);
+```
+
+Without an ambient `Trace`, nothing is emitted and behavior is unchanged.
 
 ### Divergences from the Python adapter
 
