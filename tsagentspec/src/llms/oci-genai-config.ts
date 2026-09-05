@@ -3,6 +3,7 @@
  */
 import { z } from "zod";
 import { ComponentBaseSchema } from "../component.js";
+import { RetryPolicySchema } from "../retry-policy.js";
 import { LlmGenerationConfigSchema } from "./llm-config.js";
 import { OciClientConfigUnion, type OciClientConfig } from "./oci-client-config.js";
 
@@ -58,6 +59,7 @@ export const OciGenAiConfigSchema = ComponentBaseSchema.extend({
     .default(OciAPIType.OCI),
   conversationStoreId: z.string().optional(),
   defaultGenerationParameters: LlmGenerationConfigSchema.optional(),
+  retryPolicy: RetryPolicySchema.optional(),
 });
 
 export type OciGenAiConfig = z.infer<typeof OciGenAiConfigSchema>;
@@ -75,6 +77,7 @@ export function createOciGenAiConfig(opts: {
   apiType?: OciAPIType;
   conversationStoreId?: string;
   defaultGenerationParameters?: z.infer<typeof LlmGenerationConfigSchema>;
+  retryPolicy?: z.input<typeof RetryPolicySchema>;
 }): OciGenAiConfig {
   return Object.freeze(
     OciGenAiConfigSchema.parse({

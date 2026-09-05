@@ -4,12 +4,20 @@
 import { z } from "zod";
 import { ComponentWithIOSchema } from "../component.js";
 import type { Property } from "../property.js";
+import { RetryPolicySchema } from "../retry-policy.js";
 import { ToolBaseSchema } from "../tools/tool.js";
 import { ClientTransportUnion, type ClientTransport } from "./client-transport.js";
 
 export const MCPToolSchema = ToolBaseSchema.extend({
   componentType: z.literal("MCPTool"),
   clientTransport: ClientTransportUnion,
+  /**
+   * Optional retry configuration for semantic MCP tool resolution and
+   * execution. Only the attempt and backoff fields apply to this semantic
+   * retry; transport request timeout and HTTP status retry fields belong to
+   * retry policies on remote MCP transports.
+   */
+  retryPolicy: RetryPolicySchema.optional(),
 });
 
 export type MCPTool = z.infer<typeof MCPToolSchema>;
@@ -20,6 +28,7 @@ export function createMCPTool(opts: {
   id?: string;
   description?: string;
   metadata?: Record<string, unknown>;
+  retryPolicy?: z.input<typeof RetryPolicySchema>;
   inputs?: Property[];
   outputs?: Property[];
   requiresConfirmation?: boolean;

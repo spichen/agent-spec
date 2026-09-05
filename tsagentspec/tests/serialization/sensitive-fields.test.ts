@@ -2,6 +2,8 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import {
   AgentSpecSerializer,
   createAgent,
+  createLlmConfig,
+  createOAuthClientConfig,
   createOpenAiCompatibleConfig,
   createOllamaConfig,
   createVllmConfig,
@@ -96,6 +98,43 @@ describe("sensitive field exclusion", () => {
     const dict = JSON.parse(json);
     const llmDict = dict["llm_config"] as Record<string, unknown>;
     expect("api_key" in llmDict).toBe(false);
+  });
+
+  it("should exclude apiKey from the bare LlmConfig", () => {
+    const serializer = new AgentSpecSerializer();
+    const llm = createLlmConfig({
+      name: "bare-llm",
+      modelId: "gpt-4o",
+      apiProvider: "openai",
+      apiKey: "sk-secret",
+    });
+    const agent = createAgent({
+      name: "agent",
+      llmConfig: llm,
+      systemPrompt: "Hello",
+    });
+    const json = serializer.toJson(agent) as string;
+    const llmDict = JSON.parse(json)["llm_config"] as Record<string, unknown>;
+    expect("api_key" in llmDict).toBe(false);
+    expect(json.includes("sk-secret")).toBe(false);
+  });
+
+  it("should exclude clientId, clientSecret, and clientIdMetadataUrl from OAuthClientConfig", () => {
+    const serializer = new AgentSpecSerializer();
+    const client = createOAuthClientConfig({
+      name: "client",
+      type: "pre_registered",
+      clientId: "the-client-id",
+      clientSecret: "the-client-secret",
+      clientIdMetadataUrl: "https://app.example.com/client-metadata.json",
+    });
+    const json = serializer.toJson(client) as string;
+    const dict = JSON.parse(json);
+    expect("client_id" in dict).toBe(false);
+    expect("client_secret" in dict).toBe(false);
+    expect("client_id_metadata_url" in dict).toBe(false);
+    expect(json.includes("the-client-id")).toBe(false);
+    expect(json.includes("the-client-secret")).toBe(false);
   });
 
   it("should exclude sensitiveHeaders from RemoteTool", () => {

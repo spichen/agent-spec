@@ -17,9 +17,19 @@ import {
   createControlFlowEdge,
   createFlow,
   createApiNode,
+  createMCPTool,
+  createMCPToolBox,
+  createOAuthClientConfig,
+  createOAuthConfig,
+  createSSETransport,
+  createStdioTransport,
   FlowBuilder,
   stringProperty,
   integerProperty,
+  type RemoteTool,
+  type ApiNode,
+  type MCPTool,
+  type MCPToolBox,
 } from "../../src/index.js";
 
 const serializer = new AgentSpecSerializer();
@@ -320,6 +330,163 @@ describe("Round-trip serialization", () => {
       });
       const result = roundTrip(tool);
       expect(result["configuration"]).toEqual(configuration);
+    });
+  });
+
+  describe("RetryPolicy, url allow-lists, and MCP auth", () => {
+    it("should round-trip a RemoteTool with urlAllowList and retryPolicy", () => {
+      const tool = createRemoteTool({
+        name: "remote-tool",
+        url: "https://api.example.com/orders/{{order_id}}",
+        httpMethod: "GET",
+        urlAllowList: ["https://api.example.com/orders/"],
+        retryPolicy: { maxAttempts: 3, requestTimeout: 0.5, initialRetryDelay: 1 },
+      });
+      const loaded = deserializer.fromJson(
+        serializer.toJson(tool) as string,
+      ) as RemoteTool;
+      expect(loaded).toEqual(tool);
+    });
+
+    it("should round-trip an ApiNode with urlAllowList and retryPolicy", () => {
+      const node = createApiNode({
+        name: "api",
+        url: "https://api.example.com/orders/{{order_id}}",
+        httpMethod: "GET",
+        urlAllowList: ["https://api.example.com/orders/"],
+        retryPolicy: { maxAttempts: 3, requestTimeout: 0.5 },
+      });
+      const loaded = deserializer.fromJson(
+        serializer.toJson(node) as string,
+      ) as ApiNode;
+      expect(loaded).toEqual(node);
+    });
+
+    it("should emit the exact Python wire keys for a retry policy", () => {
+      const tool = createRemoteTool({
+        name: "remote-tool",
+        url: "https://api.example.com",
+        httpMethod: "GET",
+        retryPolicy: { serviceErrorRetryOnAny5xx: false, jitter: null },
+      });
+      const json = serializer.toJson(tool) as string;
+      const retryDict = JSON.parse(json)["retry_policy"] as Record<string, unknown>;
+
+      // All eight fields are present (Python's model_dump keeps nulls) with
+      // exact snake_case names; "service_error_retry_on_any_5xx" cannot be
+      // produced by the generic camelToSnake converter and is pinned here.
+      expect(Object.keys(retryDict).sort()).toEqual([
+        "backoff_factor",
+        "initial_retry_delay",
+        "jitter",
+        "max_attempts",
+        "max_retry_delay",
+        "recoverable_statuses",
+        "request_timeout",
+        "service_error_retry_on_any_5xx",
+      ]);
+      expect(retryDict["service_error_retry_on_any_5xx"]).toBe(false);
+      expect(retryDict["jitter"]).toBeNull();
+      expect(retryDict["request_timeout"]).toBeNull();
+
+      const loaded = deserializer.fromJson(json) as RemoteTool;
+      expect(loaded.retryPolicy?.serviceErrorRetryOnAny5xx).toBe(false);
+      expect(loaded.retryPolicy?.jitter).toBeNull();
+      expect(loaded).toEqual(tool);
+    });
+
+    it("should round-trip an MCPTool with a semantic retryPolicy", () => {
+      const tool = createMCPTool({
+        name: "mcp-tool",
+        clientTransport: createStdioTransport({ name: "stdio", command: "node" }),
+        retryPolicy: { maxAttempts: 3, initialRetryDelay: 0.25 },
+      });
+      const json = serializer.toJson(tool) as string;
+      expect(
+        (JSON.parse(json)["retry_policy"] as Record<string, unknown>)["max_attempts"],
+      ).toBe(3);
+      const loaded = deserializer.fromJson(json) as MCPTool;
+      expect(loaded).toEqual(tool);
+    });
+
+    it("should round-trip an MCPToolBox with transport and semantic retry policies", () => {
+      const toolbox = createMCPToolBox({
+        name: "toolbox",
+        clientTransport: createSSETransport({
+          name: "sse",
+          url: "https://mcp.example.com/sse",
+          retryPolicy: { maxAttempts: 3, initialRetryDelay: 0.25 },
+        }),
+        retryPolicy: { maxAttempts: 4, initialRetryDelay: 0.5 },
+      });
+      const json = serializer.toJson(toolbox) as string;
+      const dict = JSON.parse(json);
+      expect((dict["retry_policy"] as Record<string, unknown>)["max_attempts"]).toBe(4);
+      const transportDict = dict["client_transport"] as Record<string, unknown>;
+      expect(
+        (transportDict["retry_policy"] as Record<string, unknown>)["max_attempts"],
+      ).toBe(3);
+      const loaded = deserializer.fromJson(json) as MCPToolBox;
+      expect(loaded).toEqual(toolbox);
+    });
+
+    it("should round-trip a full spec carrying the new fields byte-stably", () => {
+      const agent = createAgent({
+        id: "agent",
+        name: "agent",
+        llmConfig: createOpenAiCompatibleConfig({
+          id: "llm",
+          name: "llm",
+          url: "http://localhost:8000",
+          modelId: "gpt-4",
+          retryPolicy: { maxAttempts: 3, requestTimeout: 0.5 },
+        }),
+        systemPrompt: "Hello",
+        tools: [
+          createRemoteTool({
+            id: "remote-tool",
+            name: "remote-tool",
+            url: "https://api.example.com/orders/{{order_id}}",
+            httpMethod: "GET",
+            urlAllowList: ["https://api.example.com/orders/"],
+            retryPolicy: { maxAttempts: 2 },
+          }),
+        ],
+        toolboxes: [
+          createMCPToolBox({
+            id: "toolbox",
+            name: "toolbox",
+            clientTransport: createSSETransport({
+              id: "transport",
+              name: "sse",
+              url: "https://mcp.example.com/sse",
+              retryPolicy: { maxAttempts: 3, initialRetryDelay: 0.25 },
+              auth: createOAuthConfig({
+                id: "oauth",
+                name: "oauth",
+                issuer: "https://issuer.example.com",
+                client: createOAuthClientConfig({
+                  id: "client",
+                  name: "client",
+                  type: "pre_registered",
+                  clientId: "client_id",
+                  clientSecret: "client_secret",
+                }),
+                redirectUri: "https://app.example.com/callback",
+                scopes: ["openid"],
+                pkce: { required: true, method: "S256" },
+              }),
+            }),
+            retryPolicy: { maxAttempts: 4, initialRetryDelay: 0.5 },
+          }),
+        ],
+      });
+
+      const json = serializer.toJson(agent) as string;
+      const reserialized = serializer.toJson(
+        deserializer.fromJson(json) as any,
+      ) as string;
+      expect(reserialized).toBe(json);
     });
   });
 });

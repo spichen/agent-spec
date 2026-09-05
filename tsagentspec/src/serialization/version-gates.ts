@@ -26,9 +26,12 @@ export const VERSION_GATED_FIELDS = {
   RemoteTool: {
     requiresConfirmation: AgentSpecVersion.V25_4_2,
     sensitiveHeaders: AgentSpecVersion.V25_4_2,
+    urlAllowList: AgentSpecVersion.V26_1_2,
+    retryPolicy: AgentSpecVersion.V26_1_2,
   },
   MCPTool: {
     requiresConfirmation: AgentSpecVersion.V25_4_2,
+    retryPolicy: AgentSpecVersion.V26_3_0,
   },
   BuiltinTool: {
     _self: AgentSpecVersion.V25_4_2,
@@ -50,33 +53,66 @@ export const VERSION_GATED_FIELDS = {
   },
   OpenAiConfig: {
     apiType: AgentSpecVersion.V25_4_2,
+    retryPolicy: AgentSpecVersion.V26_1_2,
   },
   OpenAiCompatibleConfig: {
     apiType: AgentSpecVersion.V25_4_2,
+    retryPolicy: AgentSpecVersion.V26_1_2,
   },
   OciGenAiConfig: {
     apiType: AgentSpecVersion.V25_4_2,
+    retryPolicy: AgentSpecVersion.V26_1_2,
+  },
+  OllamaConfig: {
+    retryPolicy: AgentSpecVersion.V26_1_2,
+  },
+  VllmConfig: {
+    retryPolicy: AgentSpecVersion.V26_1_2,
+  },
+  // Bare LlmConfig was abstract before 26.1.2; the whole component is gated.
+  LlmConfig: {
+    _self: AgentSpecVersion.V26_1_2,
+  },
+  OAuthConfig: {
+    _self: AgentSpecVersion.V26_1_2,
+  },
+  OAuthClientConfig: {
+    _self: AgentSpecVersion.V26_1_2,
   },
   ApiNode: {
     sensitiveHeaders: AgentSpecVersion.V25_4_2,
+    urlAllowList: AgentSpecVersion.V26_1_2,
+    retryPolicy: AgentSpecVersion.V26_1_2,
   },
   SSETransport: {
     sensitiveHeaders: AgentSpecVersion.V25_4_2,
+    auth: AgentSpecVersion.V26_1_2,
+    retryPolicy: AgentSpecVersion.V26_1_2,
   },
   SSEmTLSTransport: {
     sensitiveHeaders: AgentSpecVersion.V25_4_2,
+    auth: AgentSpecVersion.V26_1_2,
+    retryPolicy: AgentSpecVersion.V26_1_2,
   },
   StreamableHTTPTransport: {
     sensitiveHeaders: AgentSpecVersion.V25_4_2,
+    auth: AgentSpecVersion.V26_1_2,
+    retryPolicy: AgentSpecVersion.V26_1_2,
   },
   StreamableHTTPmTLSTransport: {
     sensitiveHeaders: AgentSpecVersion.V25_4_2,
+    auth: AgentSpecVersion.V26_1_2,
+    retryPolicy: AgentSpecVersion.V26_1_2,
   },
   RemoteTransport: {
     sensitiveHeaders: AgentSpecVersion.V25_4_2,
+    auth: AgentSpecVersion.V26_1_2,
+    retryPolicy: AgentSpecVersion.V26_1_2,
   },
   MCPToolBox: {
     _self: AgentSpecVersion.V25_4_2,
     requiresConfirmation: AgentSpecVersion.V26_2_0,
+    // Semantic MCP retry landed as 26.3.0 (Python has no 26.2.0 member).
+    retryPolicy: AgentSpecVersion.V26_3_0,
   },
 } satisfies Partial<Record<ComponentTypeName, Record<string, AgentSpecVersion>>>;

@@ -49,7 +49,8 @@ export type AbstractComponentType =
   | "OciClientConfig"
   | "ClientTransport"
   | "Datastore"
-  | "MessageTransform";
+  | "MessageTransform"
+  | "AuthConfig";
 
 /** All concrete component type string literals */
 export type ComponentTypeName =
@@ -80,6 +81,7 @@ export type ComponentTypeName =
   | "BuiltinTool"
   | "MCPTool"
   | "MCPToolSpec"
+  | "LlmConfig"
   | "OpenAiCompatibleConfig"
   | "OllamaConfig"
   | "VllmConfig"
@@ -106,5 +108,7 @@ export type ComponentTypeName =
   | "TlsPostgresDatabaseConnectionConfig"
   | "A2AConnectionConfig"
   | "AgentSpecializationParameters"
+  | "OAuthConfig"
+  | "OAuthClientConfig"
   | "MessageSummarizationTransform"
   | "ConversationSummarizationTransform";

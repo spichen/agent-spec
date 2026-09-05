@@ -3,6 +3,7 @@
  */
 import { z } from "zod";
 import type { Property } from "../property.js";
+import { RetryPolicySchema } from "../retry-policy.js";
 import { getPlaceholderPropertiesFromJsonObject } from "../templating.js";
 import { ToolBaseSchema } from "./tool.js";
 
@@ -15,6 +16,13 @@ export const RemoteToolSchema = ToolBaseSchema.extend({
   queryParams: z.record(z.unknown()).default({}),
   headers: z.record(z.unknown()).default({}),
   sensitiveHeaders: z.record(z.unknown()).default({}),
+  /**
+   * Optional list of allowed URLs or URL prefixes for the rendered request
+   * URL: scheme and authority match exactly, path by prefix.
+   */
+  urlAllowList: z.array(z.string()).optional(),
+  /** Optional retry configuration for the HTTP call performed by this tool. */
+  retryPolicy: RetryPolicySchema.optional(),
 });
 
 export type RemoteTool = z.infer<typeof RemoteToolSchema>;
@@ -49,6 +57,8 @@ export function createRemoteTool(opts: {
   queryParams?: Record<string, unknown>;
   headers?: Record<string, unknown>;
   sensitiveHeaders?: Record<string, unknown>;
+  urlAllowList?: string[];
+  retryPolicy?: z.input<typeof RetryPolicySchema>;
   inputs?: Property[];
   outputs?: Property[];
   requiresConfirmation?: boolean;

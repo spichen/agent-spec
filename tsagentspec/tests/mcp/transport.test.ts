@@ -52,6 +52,24 @@ describe("SSETransport", () => {
     expect(t.headers).toEqual({ Authorization: "Bearer token" });
     expect(t.sensitiveHeaders).toEqual({ "X-Secret": "value" });
   });
+
+  it("should accept a partial retryPolicy, filling defaults", () => {
+    const t = createSSETransport({
+      name: "sse",
+      url: "http://localhost/sse",
+      retryPolicy: { maxAttempts: 3, initialRetryDelay: 0.25 },
+    });
+    expect(t.retryPolicy?.maxAttempts).toBe(3);
+    expect(t.retryPolicy?.initialRetryDelay).toBe(0.25);
+    expect(t.retryPolicy?.maxRetryDelay).toBe(8.0);
+    expect(t.retryPolicy?.jitter).toBe("full_and_equal_for_throttle");
+  });
+
+  it("should leave auth and retryPolicy undefined by default", () => {
+    const t = createSSETransport({ name: "sse", url: "http://localhost/sse" });
+    expect(t.auth).toBeUndefined();
+    expect(t.retryPolicy).toBeUndefined();
+  });
 });
 
 describe("SSEmTLSTransport", () => {
@@ -108,5 +126,15 @@ describe("RemoteTransport", () => {
       url: "http://localhost",
     });
     expect(t.sessionParameters.readTimeoutSeconds).toBe(60.0);
+  });
+
+  it("should accept a partial retryPolicy, filling defaults", () => {
+    const t = createRemoteTransport({
+      name: "remote",
+      url: "http://localhost",
+      retryPolicy: { maxAttempts: 5 },
+    });
+    expect(t.retryPolicy?.maxAttempts).toBe(5);
+    expect(t.retryPolicy?.backoffFactor).toBe(2.0);
   });
 });

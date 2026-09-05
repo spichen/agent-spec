@@ -99,4 +99,34 @@ describe("RemoteTool", () => {
     });
     expect(Object.isFrozen(tool)).toBe(true);
   });
+
+  it("should leave urlAllowList and retryPolicy undefined by default", () => {
+    const tool = createRemoteTool({
+      name: "api-tool",
+      url: "https://api.example.com",
+      httpMethod: "GET",
+    });
+    expect(tool.urlAllowList).toBeUndefined();
+    expect(tool.retryPolicy).toBeUndefined();
+  });
+
+  it("should accept urlAllowList and a partial retryPolicy, filling defaults", () => {
+    const tool = createRemoteTool({
+      name: "api-tool",
+      url: "https://api.example.com/orders/{{order_id}}",
+      httpMethod: "GET",
+      urlAllowList: ["https://api.example.com/orders/"],
+      retryPolicy: { maxAttempts: 3, requestTimeout: 0.5, initialRetryDelay: 1 },
+    });
+    expect(tool.urlAllowList).toEqual(["https://api.example.com/orders/"]);
+    expect(tool.retryPolicy?.maxAttempts).toBe(3);
+    expect(tool.retryPolicy?.requestTimeout).toBe(0.5);
+    expect(tool.retryPolicy?.initialRetryDelay).toBe(1);
+    // defaults filled in for the unset fields
+    expect(tool.retryPolicy?.maxRetryDelay).toBe(8.0);
+    expect(tool.retryPolicy?.backoffFactor).toBe(2.0);
+    expect(tool.retryPolicy?.jitter).toBe("full_and_equal_for_throttle");
+    expect(tool.retryPolicy?.serviceErrorRetryOnAny5xx).toBe(true);
+    expect(tool.retryPolicy?.recoverableStatuses).toEqual({ "409": [], "429": [] });
+  });
 });

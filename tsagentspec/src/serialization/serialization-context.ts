@@ -172,16 +172,22 @@ export class SerializationContext {
    * Serialize a LlmGenerationConfig-like object.
    * Converts keys to snake_case and excludes null/undefined values.
    * Called by the builtin serialization plugin for known model fields.
+   * `keyOverrides` maps camelCase keys to exact wire names for the few keys
+   * the generic converter cannot produce (e.g. RetryPolicy's
+   * "service_error_retry_on_any_5xx").
    */
   dumpModelObject(
     obj: Record<string, unknown>,
     excludeNulls: boolean,
+    keyOverrides?: Record<string, string>,
   ): Record<string, unknown> {
     const result: Record<string, unknown> = {};
     for (const [key, value] of Object.entries(obj)) {
       if (DANGEROUS_KEYS.has(key)) continue;
       if (excludeNulls && (value === null || value === undefined)) continue;
-      const outKey = this.camelCase ? key : camelToSnake(key);
+      const outKey = this.camelCase
+        ? key
+        : keyOverrides?.[key] ?? camelToSnake(key);
       result[outKey] = this.dumpField(value);
     }
     return result;

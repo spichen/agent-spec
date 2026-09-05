@@ -57,6 +57,31 @@ export {
 // Sensitive field handling
 export { SENSITIVE_FIELDS, isSensitiveField } from "./sensitive-field.js";
 
+// Retry policy
+export {
+  RetryPolicySchema,
+  RetryJitter,
+  type RetryPolicy,
+} from "./retry-policy.js";
+
+// Auth configs
+export {
+  AuthConfigUnion,
+  OAuthConfigSchema,
+  OAuthClientConfigSchema,
+  OAuthEndpointsSchema,
+  PKCEPolicySchema,
+  PKCEMethod,
+  ScopePolicy,
+  createOAuthConfig,
+  createOAuthClientConfig,
+  type AuthConfig,
+  type OAuthConfig,
+  type OAuthClientConfig,
+  type OAuthEndpoints,
+  type PKCEPolicy,
+} from "./auth.js";
+
 // LLM configs
 export {
   LlmConfigUnion,
@@ -64,6 +89,9 @@ export {
   OpenAIAPIType,
   type LlmConfig,
   type LlmGenerationConfig,
+  LlmConfigSchema,
+  createLlmConfig,
+  type GenericLlmConfig,
   OpenAiCompatibleConfigSchema,
   createOpenAiCompatibleConfig,
   type OpenAiCompatibleConfig,

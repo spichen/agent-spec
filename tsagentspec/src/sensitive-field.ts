@@ -7,6 +7,7 @@ export const SENSITIVE_FIELD_MARKER = "SENSITIVE_FIELD_MARKER" as const;
 
 /** Maps componentType -> set of field names that are sensitive */
 export const SENSITIVE_FIELDS = {
+  LlmConfig: new Set(["apiKey"]),
   OpenAiCompatibleConfig: new Set(["apiKey"]),
   OllamaConfig: new Set(["apiKey"]),
   VllmConfig: new Set(["apiKey"]),
@@ -33,6 +34,7 @@ export const SENSITIVE_FIELDS = {
     "password",
     "sslkey",
   ]),
+  OAuthClientConfig: new Set(["clientId", "clientSecret", "clientIdMetadataUrl"]),
 } satisfies Partial<Record<ComponentTypeName, Set<string>>>;
 
 /** Check if a field on a component type is sensitive */
