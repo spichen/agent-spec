@@ -63,6 +63,10 @@ import {
   ToolExecutionSpan,
   type Event as TracingEvent,
 } from "../../tracing/index.js";
+import {
+  forkChildContext,
+  runInChildContext,
+} from "../../tracing/context.js";
 import { isRecordLike } from "../common/index.js";
 import { extractOutputsFromInvokeResult } from "./node-execution/agent-node.js";
 
@@ -668,6 +672,31 @@ function isPromiseLike(value: unknown): value is PromiseLike<unknown> {
 }
 
 /**
+ * Drive `generator` so every resumption re-enters `enterContext`. Async
+ * generator bodies resume in the ambient context of whoever calls `next()`,
+ * so a traced stream consumed from the caller's context would otherwise push
+ * and pop its execution span on the caller's shared span stack — corrupting
+ * it under parallel invocations.
+ */
+function resumeGeneratorInContext(
+  enterContext: <T>(fn: () => T) => T,
+  generator: AsyncGenerator<unknown>,
+): AsyncGenerator<unknown> {
+  return {
+    next: (...args: [] | [unknown]) =>
+      enterContext(() => generator.next(...args)),
+    return: (value?: unknown) => enterContext(() => generator.return(value)),
+    throw: (error?: unknown) => enterContext(() => generator.throw(error)),
+    [Symbol.asyncIterator]() {
+      return this;
+    },
+    async [Symbol.asyncDispose]() {
+      await enterContext(() => generator.return(undefined));
+    },
+  };
+}
+
+/**
  * Wrap a compiled graph (or react agent) so each run is traced inside the
  * execution span named by `target.kind` for `target.component`.
  *
@@ -679,6 +708,12 @@ function isPromiseLike(value: unknown): value is PromiseLike<unknown> {
  * matching Python's `astream` path). A `stream()` promise that rejects before
  * producing the iterable still emits the span with its Start event, like
  * Python's first-`anext` failure.
+ *
+ * Each patched run executes in a forked ambient context (the JS equivalent of
+ * Python's asyncio tasks copying contextvars per task), so parallel
+ * invocations — ManagerWorkers dispatching several workers at once, or a
+ * user-level `Promise.all` of patched graphs — keep isolated span stacks
+ * instead of pushing onto and popping from the caller's shared stack.
  */
 export function patchWithExecutionSpan<T>(
   graph: T,
@@ -721,36 +756,51 @@ export function patchWithExecutionSpan<T>(
 
   const wrapInvoke =
     (original: (...args: unknown[]) => unknown, targetObject: object) =>
-    async (...args: unknown[]): Promise<unknown> => {
-      const span = factories.makeSpan();
-      await span.start();
-      try {
-        await span.addEvent(factories.makeStartEvent(invocationInputs(args[0])));
-        const result: unknown = await original.apply(targetObject, args);
-        await span.addEvent(
-          factories.makeEndEvent(isRecordLike(result) ? result : {}),
-        );
-        return result;
-      } finally {
-        await span.end();
-      }
-    };
+    (...args: unknown[]): Promise<unknown> =>
+      // Fork the ambient context per invocation so parallel runs keep
+      // isolated span stacks (the underlying run — and thus the LLM/tool
+      // callback spans it emits — executes inside the fork, parented under
+      // this execution span).
+      runInChildContext(async () => {
+        const span = factories.makeSpan();
+        await span.start();
+        try {
+          await span.addEvent(
+            factories.makeStartEvent(invocationInputs(args[0])),
+          );
+          const result: unknown = await original.apply(targetObject, args);
+          await span.addEvent(
+            factories.makeEndEvent(isRecordLike(result) ? result : {}),
+          );
+          return result;
+        } finally {
+          await span.end();
+        }
+      });
 
   const wrapStream =
     (original: (...args: unknown[]) => unknown, targetObject: object) =>
     (...args: unknown[]): unknown => {
       const inputs = invocationInputs(args[0]);
-      const out = original.apply(targetObject, args);
+      // One fork per stream call: the underlying stream machinery, the traced
+      // generator's resumptions and the failed-start path all share it.
+      const enterContext = forkChildContext();
+      const trace = (iterable: AsyncIterable<unknown>): AsyncGenerator<unknown> =>
+        resumeGeneratorInContext(
+          enterContext,
+          enterContext(() => traceStream(iterable, inputs)),
+        );
+      const out = enterContext(() => original.apply(targetObject, args));
       if (isPromiseLike(out)) {
         return (out as Promise<AsyncIterable<unknown>>).then(
-          (iterable) => traceStream(iterable, inputs),
+          (iterable) => trace(iterable),
           async (error: unknown) => {
-            await traceFailedStreamStart(inputs);
+            await enterContext(() => traceFailedStreamStart(inputs));
             throw error;
           },
         );
       }
-      return traceStream(out as AsyncIterable<unknown>, inputs);
+      return trace(out as AsyncIterable<unknown>);
     };
 
   // Probe-verified wrapping: a Proxy intercepting invoke/stream and binding

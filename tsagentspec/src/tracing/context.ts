@@ -76,6 +76,24 @@ export function popSpanFromActiveStack(): void {
 }
 
 /**
+ * @internal Fork a child context seeded with the current trace and a copy of
+ * the current span stack, and return a runner that executes functions inside
+ * that same forked store on every call. Needed where one logical branch spans
+ * multiple resumptions driven from the parent context — e.g. an async
+ * generator consumed by the caller: async generator bodies resume in the
+ * context of whoever calls `next()`, so each resumption must re-enter the
+ * forked store explicitly.
+ */
+export function forkChildContext(): <T>(fn: () => T) => T {
+  const store = currentStore();
+  const childStore: TraceContextStore = {
+    trace: store.trace,
+    spanStack: [...store.spanStack],
+  };
+  return (fn) => storage.run(childStore, fn);
+}
+
+/**
  * @internal Run `fn` in a forked child context seeded with the current trace
  * and a copy of the current span stack. Mutations inside the child (span
  * pushes/pops, trace set/clear) are invisible to the parent and to parallel
@@ -83,6 +101,5 @@ export function popSpanFromActiveStack(): void {
  * context at creation time.
  */
 export function runInChildContext<T>(fn: () => T): T {
-  const store = currentStore();
-  return storage.run({ trace: store.trace, spanStack: [...store.spanStack] }, fn);
+  return forkChildContext()(fn);
 }

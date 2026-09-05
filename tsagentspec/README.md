@@ -18,6 +18,10 @@ These types round-trip correctly between JSON/YAML and TypeScript objects:
 
 `tests/repo-fixtures.test.ts` is the CI contract: a curated list of 61 configs known to round-trip with the current SDK. Not every example or historical config file in the repo is covered here. Files using types outside the list above (e.g. `howto_swarm`, `howto_a2aagent`) are not yet supported.
 
+### Divergences from the Python SDK
+
+- `OAuthClientConfig` secrets (`client_id`, `client_secret`, `client_id_metadata_url`) are redacted from serialized output like other sensitive fields. pyagentspec declares them as `SensitiveField`s, but an annotation bug (`Optional[SensitiveField[str]]` buries the marker inside the Union, so pydantic never lifts it into the field metadata) means Python currently exports the plain values; this SDK follows the declared intent.
+
 ## Installation
 
 This package is not published to npm. Install from source:
@@ -122,12 +126,18 @@ const yaml = exporter.toYaml(compiledGraph) as string; // also: toJson, toDict, 
 ### Divergences from the Python adapter
 
 - The loader and converter APIs are async (`Promise`-based); Python is sync-first.
-- `RemoteTool` and `ApiNode` requests honor the spec's `RetryPolicy` (attempts, backoff with all four jitter modes, `Retry-After` with the 30s cap, recoverable statuses with response-body code matching, per-request `requestTimeout` override, no retry on TLS failures) and enforce `urlAllowList` on every rendered URL; a configured allow list suppresses the templated-URL warning, like Python. `ApiNode` retries diverge from Python, whose executor performs a single plain request. Requests do not follow redirects and default to a 5-second timeout (`DEFAULT_HTTP_REQUEST_TIMEOUT_MS`), matching httpx's defaults.
+- `RemoteTool` and `ApiNode` requests honor the spec's `RetryPolicy` (attempts, backoff with all four jitter modes, `Retry-After` with the 30s cap, recoverable statuses with response-body code matching, per-request `requestTimeout` override, no retry on TLS failures) and enforce `urlAllowList` on every rendered URL; a configured allow list suppresses the templated-URL warning, like Python. `ApiNode` retries diverge from Python, whose executor performs a single plain request. Requests do not follow redirects and default to a 5-second timeout (`DEFAULT_HTTP_REQUEST_TIMEOUT_MS`), matching httpx's defaults. Jitter randomness uses `Math.random()` (Python uses `SystemRandom`), and malformed `Retry-After` headers are handled defensively rather than byte-matching Python's edge behavior: a negative numeric value (invalid per RFC 9110) clamps to an immediate retry where Python lets it crash the call, `inf`/`Infinity` fall back to jittered backoff where Python caps the wait, and some date formats Python rejects (e.g. ISO 8601) are accepted.
 - When exporting a LangGraph graph whose conditional edge collides with a real node literally named `condition`, the synthetic conditional/branching node names are suffixed (`condition_1`, ...) so the real node keeps its edges; the Python-style names are used otherwise.
 - MCP transport `auth` and `retryPolicy` are representation-only (as in Python): they survive load → export untouched but are not wired into the MCP connection.
 - `OciGenAiConfig` is not supported (no `langchain-oci` package for JS).
 - The MCP mTLS transports (`SSEmTLSTransport`, `StreamableHTTPmTLSTransport`) are not supported.
-- Tracing is a no-op seam only; no execution spans or events are emitted yet.
+- Tracing is emitted with Python-parity span/event payloads: loaded graphs are wrapped in execution spans (`AgentExecutionSpan`, `FlowExecutionSpan`, `ManagerWorkersExecutionSpan`), and converter-built chat models and tools emit LLM-generation and tool-execution spans and events. Divergences:
+  - The tracing API is async-only; Python's sync/async twin callbacks collapse into single async handlers.
+  - A raw compiled graph unwrapped from a patched react agent (swarm assembly, the ManagerWorkers `__manager__` node) is not patched, so those embedded sub-agent runs emit no `AgentExecutionSpan` of their own; ManagerWorkers workers, invoked through the patched agent, do.
+  - Tool-end events follow Python's sync `on_tool_end` payload mapping (declared-outputs title mapping, `request_id` always the LangChain run id) — the variant Python's flow tests pin to exact payloads. Python routes runs under an event loop (`ainvoke`/`astream`) to its async twin, which maps a non-dict `ToolMessage` payload to `{"output": ...}` and takes `request_id` from the message's `tool_call_id` when present, so async-Python traces differ from TS (and from sync-Python) traces on those fields.
+  - The `invoke` wrapper builds the execution-span end event from the invoke result (Python folds streamed state chunks, which yields `{}` on the invoke path).
+  - Non-string trace payloads are coerced with `JSON.stringify` where Python uses `str(...)`.
+  - Parallel isolation comes from forking an `AsyncLocalStorage` child context per patched run and per flow-node span (Python relies on asyncio tasks copying `contextvars` per task).
 
 See [examples/09-langgraph-adapter.ts](./examples/09-langgraph-adapter.ts) for a complete offline round trip.
 

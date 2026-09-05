@@ -13,6 +13,8 @@
  * - Jitter randomness uses `Math.random()` (Python uses `SystemRandom`), and
  *   TLS-failure detection extends Python's message patterns with Node's TLS
  *   error texts (case-insensitively).
+ * - Malformed `Retry-After` headers are handled defensively rather than
+ *   byte-matching Python's edge behavior — see `getRetryAfterSeconds`.
  *
  * Python-parity network behavior (NOT divergences): redirects are not
  * followed and requests time out after `DEFAULT_HTTP_REQUEST_TIMEOUT_MS`
@@ -205,9 +207,17 @@ async function isRetryableHttpError(
 /**
  * Parse and cap a `Retry-After` header value (Python's
  * `_get_retry_after_seconds`): a numeric value is taken as seconds, an
- * HTTP-date as the seconds until that instant (never negative); both are
- * capped at `MAX_RETRY_AFTER_SECONDS`. Returns null for absent or unparsable
- * values.
+ * HTTP-date as the seconds until that instant; both are clamped to be never
+ * negative and capped at `MAX_RETRY_AFTER_SECONDS`. Returns null for absent
+ * or unparsable values.
+ *
+ * Malformed-header edges deliberately diverge from Python (see the adapter
+ * README): a negative numeric value (invalid per RFC 9110) clamps to an
+ * immediate retry where Python lets it crash the call in `time.sleep`;
+ * `inf`/`Infinity` are rejected as unparsable (falling back to jittered
+ * backoff) where Python's `float()` accepts them and caps the wait; and
+ * `Date.parse` accepts some date formats (e.g. ISO 8601) that Python's
+ * `parsedate_to_datetime` rejects.
  */
 export function getRetryAfterSeconds(
   retryAfterValue: string | null,
@@ -220,7 +230,7 @@ export function getRetryAfterSeconds(
   if (trimmed !== "") {
     const numericValue = Number(trimmed);
     if (Number.isFinite(numericValue)) {
-      return Math.min(numericValue, MAX_RETRY_AFTER_SECONDS);
+      return Math.min(Math.max(0, numericValue), MAX_RETRY_AFTER_SECONDS);
     }
   }
   const retryAfterDateMs = Date.parse(retryAfterValue);

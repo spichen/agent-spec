@@ -34,6 +34,12 @@ export const SENSITIVE_FIELDS = {
     "password",
     "sslkey",
   ]),
+  // Deliberate divergence from pyagentspec's current wire behavior: auth.py
+  // declares these as `Optional[SensitiveField[str]]`, which buries the
+  // sensitivity marker inside the Union so pydantic never lifts it into
+  // `FieldInfo.metadata` — Python therefore exports the plain secret values
+  // today. That is an upstream annotation bug; this SDK follows the declared
+  // intent and redacts.
   OAuthClientConfig: new Set(["clientId", "clientSecret", "clientIdMetadataUrl"]),
 } satisfies Partial<Record<ComponentTypeName, Set<string>>>;
 

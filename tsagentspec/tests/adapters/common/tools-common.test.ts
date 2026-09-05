@@ -120,6 +120,26 @@ describe("getRetryAfterSeconds", () => {
     expect(getRetryAfterSeconds(null)).toBeNull();
     expect(getRetryAfterSeconds("soon")).toBeNull();
   });
+
+  // The malformed-header edges below deliberately diverge from Python — see
+  // the getRetryAfterSeconds docstring and the adapter README.
+
+  it("clamps a negative numeric value (invalid per RFC 9110) to an immediate retry", () => {
+    // Python returns -5 and lets time.sleep(-5) raise, failing the call.
+    expect(getRetryAfterSeconds("-5")).toBe(0);
+    expect(getRetryAfterSeconds("-0.1")).toBe(0);
+  });
+
+  it("treats infinite numeric values as unparsable (Python's float() caps them at 30)", () => {
+    expect(getRetryAfterSeconds("Infinity")).toBeNull();
+    expect(getRetryAfterSeconds("-Infinity")).toBeNull();
+    expect(getRetryAfterSeconds("inf")).toBeNull();
+  });
+
+  it("accepts ISO 8601 dates (Python's HTTP-date parser rejects them)", () => {
+    const nowMs = Date.parse("2015-10-21T07:28:00Z");
+    expect(getRetryAfterSeconds("2015-10-21T07:28:10Z", nowMs)).toBe(10);
+  });
 });
 
 describe("computeWaitSeconds jitter modes", () => {

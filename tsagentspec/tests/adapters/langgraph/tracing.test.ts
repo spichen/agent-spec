@@ -67,6 +67,7 @@ import {
 import {
   AgentSpecLlmCallbackHandler,
   AgentSpecToolCallbackHandler,
+  patchWithExecutionSpan,
 } from "../../../src/adapters/langgraph/tracing.js";
 import {
   FakeLlmAgentSpecLoader,
@@ -1036,5 +1037,149 @@ describe("langgraph adapter tracing", () => {
     expect(synthesized.outputs?.map((output) => output.title)).toEqual([
       "tool_output",
     ]);
+  });
+});
+
+/**
+ * Regression tests: `patchWithExecutionSpan` forks a child ambient context
+ * per run, so concurrent patched invocations in ONE context (ManagerWorkers
+ * dispatching several workers at once, a user-level `Promise.all`) keep
+ * isolated span stacks — a span ending first must not pop a still-running
+ * sibling from the caller's stack. Python is immune because asyncio tasks
+ * copy contextvars per task.
+ */
+describe("patchWithExecutionSpan parallel isolation", () => {
+  interface Deferred {
+    promise: Promise<void>;
+    resolve: () => void;
+  }
+
+  function deferred(): Deferred {
+    let resolve!: () => void;
+    const promise = new Promise<void>((res) => {
+      resolve = res;
+    });
+    return { promise, resolve };
+  }
+
+  /** A fake compiled graph whose run signals `started`, then blocks on `gate`. */
+  function gatedGraph(started: Deferred, gate: Deferred) {
+    return {
+      async invoke(_input: unknown): Promise<Record<string, unknown>> {
+        started.resolve();
+        await gate.promise;
+        return { messages: [] };
+      },
+      async stream(_input: unknown): Promise<AsyncIterable<unknown>> {
+        return (async function* () {
+          started.resolve();
+          await gate.promise;
+          yield ["values", { messages: [] }];
+        })();
+      },
+    };
+  }
+
+  function gatedPatchedPair() {
+    const started1 = deferred();
+    const started2 = deferred();
+    const gate1 = deferred();
+    const gate2 = deferred();
+    const graph1 = patchWithExecutionSpan(gatedGraph(started1, gate1), {
+      kind: "agent",
+      component: makeAgent({ name: "agent1" }),
+    });
+    const graph2 = patchWithExecutionSpan(gatedGraph(started2, gate2), {
+      kind: "agent",
+      component: makeAgent({ name: "agent2" }),
+    });
+    return { started1, started2, gate1, gate2, graph1, graph2 };
+  }
+
+  it("keeps concurrent invokes' span stacks isolated in one ambient context", async () => {
+    const { started1, started2, gate1, gate2, graph1, graph2 } =
+      gatedPatchedPair();
+    const proc = new RecordingSpanProcessor();
+    const trace = new Trace({ spanProcessors: [proc] });
+
+    await trace.run(async () => {
+      const run1 = graph1.invoke({});
+      const run2 = graph2.invoke({});
+      await Promise.all([started1.promise, started2.promise]);
+
+      // Finish the first-started run while the second is still in flight.
+      gate1.resolve();
+      await run1;
+      // The caller's ambient stack is untouched: agent1's end must not have
+      // popped agent2's still-running span, nor left ended-agent1 as current.
+      expect(getCurrentSpan()).toBe(trace.rootSpan);
+      const endedSoFar = endedSpans(proc, AgentExecutionSpan);
+      expect(endedSoFar).toHaveLength(1);
+      expect(endedSoFar[0]!.name).toBe("AgentExecution[agent1]");
+
+      gate2.resolve();
+      await run2;
+    });
+
+    const agentSpans = startedSpans(proc, AgentExecutionSpan);
+    expect(agentSpans).toHaveLength(2);
+    // Parallel runs are siblings under the root, never nested under each other.
+    for (const span of agentSpans) {
+      expect(span.parentSpan).toBe(trace.rootSpan);
+    }
+    expect(endedSpans(proc, AgentExecutionSpan)).toHaveLength(2);
+  });
+
+  it("keeps concurrent streams isolated while consumed from the caller's context", async () => {
+    const { started1, started2, gate1, gate2, graph1, graph2 } =
+      gatedPatchedPair();
+    const proc = new RecordingSpanProcessor();
+    const trace = new Trace({ spanProcessors: [proc] });
+
+    await trace.run(async () => {
+      const drain = async (graph: typeof graph1): Promise<number> => {
+        let chunks = 0;
+        for await (const _chunk of await graph.stream({})) {
+          chunks += 1;
+        }
+        return chunks;
+      };
+      const run1 = drain(graph1);
+      const run2 = drain(graph2);
+      await Promise.all([started1.promise, started2.promise]);
+
+      gate1.resolve();
+      expect(await run1).toBe(1);
+      expect(getCurrentSpan()).toBe(trace.rootSpan);
+      expect(endedSpans(proc, AgentExecutionSpan)).toHaveLength(1);
+
+      gate2.resolve();
+      expect(await run2).toBe(1);
+    });
+
+    const agentSpans = startedSpans(proc, AgentExecutionSpan);
+    expect(agentSpans).toHaveLength(2);
+    for (const span of agentSpans) {
+      expect(span.parentSpan).toBe(trace.rootSpan);
+    }
+    expect(endedSpans(proc, AgentExecutionSpan)).toHaveLength(2);
+  });
+
+  it("parents the run's LLM and tool spans under the execution span inside the fork", async () => {
+    const agent = await loadWeatherAgent();
+    const proc = new RecordingSpanProcessor();
+    await new Trace({ spanProcessors: [proc] }).run(async () => {
+      await agent.invoke(WEATHER_QUESTION);
+    });
+
+    const agentSpans = startedSpans(proc, AgentExecutionSpan);
+    expect(agentSpans).toHaveLength(1);
+    const llmSpans = startedSpans(proc, LlmGenerationSpan);
+    const toolSpans = startedSpans(proc, ToolExecutionSpan);
+    expect(llmSpans.length).toBeGreaterThan(0);
+    expect(toolSpans.length).toBeGreaterThan(0);
+    for (const span of [...llmSpans, ...toolSpans]) {
+      expect(span.parentSpan).toBe(agentSpans[0]);
+    }
   });
 });
