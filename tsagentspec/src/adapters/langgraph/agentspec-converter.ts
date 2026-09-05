@@ -16,8 +16,10 @@
  *   their models/prompts, so a faithful Swarm export is unreachable in JS.
  * - MCP tools load as ServerTools: the MCP connection lives in a JS closure
  *   that cannot be introspected, so Python's MCPTool recovery is skipped.
- * - The TS SDK LlmConfigs have no `retryPolicy`, so ChatOpenAI retry/timeout
- *   settings are not exported.
+ * - ChatOpenAI retry/timeout settings export as `retryPolicy` like Python,
+ *   but the JS model retains an explicit `maxRetries` only in its
+ *   constructor kwargs (`lc_kwargs`), and its `timeout` is in milliseconds
+ *   (converted to the spec's seconds).
  * - OciGenAiConfig export is not supported (no langchain-oci JS package).
  */
 import { BaseChatModel } from "@langchain/core/language_models/chat_models";
@@ -326,13 +328,13 @@ export class LangGraphToAgentSpecConverter
         openAiModel.clientConfig?.baseURL ??
         openAiModel.fields?.configuration?.baseURL ??
         "";
-      // Note: the TS SDK LlmConfigs have no retryPolicy, so ChatOpenAI
-      // maxRetries/timeout are not exported (documented divergence).
+      const retryPolicy = this.chatOpenAiRetryPolicyToAgentSpec(model);
       if (baseUrl.startsWith("https://api.openai.com")) {
         return createOpenAiConfig({
           name: modelName,
           modelId: modelName,
           apiType,
+          ...(retryPolicy !== undefined ? { retryPolicy } : {}),
         });
       }
       return createOpenAiCompatibleConfig({
@@ -340,11 +342,60 @@ export class LangGraphToAgentSpecConverter
         url: baseUrl,
         modelId: modelName,
         apiType,
+        ...(retryPolicy !== undefined ? { retryPolicy } : {}),
       });
     }
     throw new Error(
       `The LLM instance provided is of an unsupported type \`${constructorName || llmType}\`.`,
     );
+  }
+
+  /**
+   * Convert ChatOpenAI retry and timeout settings into an Agent Spec retry
+   * policy input, or undefined when both sit at their defaults (Python's
+   * `_chat_openai_retry_policy_convert_to_agentspec`).
+   *
+   * The JS ChatOpenAI does not retain `maxRetries` as an own field (it flows
+   * into the async caller, whose default of 6 is unrelated to an explicit
+   * setting), so the explicitly-passed value is read from the constructor
+   * kwargs (`lc_kwargs`). The `timeout` field is in milliseconds and maps to
+   * the spec's `requestTimeout` seconds.
+   */
+  protected chatOpenAiRetryPolicyToAgentSpec(
+    model: BaseChatModel,
+  ): { maxAttempts: number; requestTimeout?: number } | undefined {
+    const DEFAULT_MAX_ATTEMPTS = 2; // RetryPolicy default
+    const constructorKwargs =
+      (model as unknown as { lc_kwargs?: Record<string, unknown> }).lc_kwargs ??
+      {};
+    const maxRetriesRaw = constructorKwargs["maxRetries"];
+    const maxRetries =
+      typeof maxRetriesRaw === "number" ? maxRetriesRaw : undefined;
+
+    const rawTimeout = (model as unknown as { timeout?: unknown }).timeout;
+    let requestTimeout: number | undefined;
+    if (rawTimeout == null) {
+      requestTimeout = undefined;
+    } else if (typeof rawTimeout === "number") {
+      requestTimeout = rawTimeout / 1000;
+    } else {
+      throw new Error(
+        "LangGraph ChatOpenAI timeout conversion supports only a single timeout value " +
+          "because Agent Spec `RetryPolicy.request_timeout` exposes one per-request timeout.",
+      );
+    }
+
+    const hasCustomRetryCount =
+      maxRetries !== undefined && maxRetries !== DEFAULT_MAX_ATTEMPTS;
+    const hasCustomTimeout = requestTimeout !== undefined;
+    if (!hasCustomRetryCount && !hasCustomTimeout) {
+      return undefined;
+    }
+
+    return {
+      maxAttempts: maxRetries ?? DEFAULT_MAX_ATTEMPTS,
+      ...(requestTimeout !== undefined ? { requestTimeout } : {}),
+    };
   }
 
   /**

@@ -18,9 +18,13 @@
  */
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import {
+  AgentSpecDeserializer,
+  AgentSpecSerializer,
   createMCPTool,
   createMCPToolBox,
   createMCPToolSpec,
+  createOAuthClientConfig,
+  createOAuthConfig,
   createRemoteTransport,
   createSSETransport,
   createSSEmTLSTransport,
@@ -30,6 +34,7 @@ import {
   integerProperty,
   stringProperty,
   type ClientTransport,
+  type SSETransport,
 } from "../../../src/index.js";
 import {
   convertClientTransport,
@@ -181,6 +186,61 @@ describe("convertClientTransport", () => {
     expect(() => convertClientTransport(remoteTransport)).toThrow(
       "Agent Spec ClientTransport 'RemoteTransport' is not supported yet.",
     );
+  });
+});
+
+describe("transport auth and retryPolicy (representation-only)", () => {
+  function makeAuthedSseTransport(): SSETransport {
+    return createSSETransport({
+      name: "my server",
+      url: "https://example.com/sse",
+      headers: { "X-Static": "1" },
+      auth: createOAuthConfig({
+        name: "oauth",
+        client: createOAuthClientConfig({
+          name: "client",
+          type: "pre_registered",
+          clientId: "client-id",
+          clientSecret: "client-secret",
+        }),
+        redirectUri: "https://app.example.com/callback",
+        scopes: ["mcp.read"],
+      }),
+      retryPolicy: { maxAttempts: 3, initialRetryDelay: 0.25 },
+    });
+  }
+
+  it("builds the MCP connection without wiring auth or retryPolicy, like Python", () => {
+    // Python's converter builds its connections from url/headers alone and
+    // wires no runtime OAuth flow or MCP-session retry either — both fields
+    // are representation-only in both SDKs.
+    expect(convertClientTransport(makeAuthedSseTransport())).toEqual({
+      transport: "sse",
+      url: "https://example.com/sse",
+      headers: { "X-Static": "1" },
+    });
+  });
+
+  it("keeps transport auth and retryPolicy untouched through load -> export", () => {
+    // The adapter loader/exporter delegate (de)serialization to these SDK
+    // classes, and the runtime conversion above never mutates the spec
+    // component, so both fields survive a load -> export round trip
+    // byte-identically (client secrets stay redacted on both sides).
+    const transport = makeAuthedSseTransport();
+    const serializer = new AgentSpecSerializer();
+    const deserializer = new AgentSpecDeserializer();
+
+    const json = serializer.toJson(transport) as string;
+    const loaded = deserializer.fromJson(json) as SSETransport;
+
+    expect(loaded.auth?.componentType).toBe("OAuthConfig");
+    expect(loaded.auth?.client.type).toBe("pre_registered");
+    expect(loaded.auth?.redirectUri).toBe("https://app.example.com/callback");
+    expect(loaded.retryPolicy?.maxAttempts).toBe(3);
+    expect(loaded.retryPolicy?.initialRetryDelay).toBe(0.25);
+
+    const reserialized = serializer.toJson(loaded) as string;
+    expect(JSON.parse(reserialized)).toEqual(JSON.parse(json));
   });
 });
 

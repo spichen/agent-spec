@@ -35,6 +35,13 @@ import type { ToolRegistry } from "./types.js";
  * StdioTransport maps to a stdio connection, SSETransport to an "sse"
  * connection and StreamableHTTPTransport to an "http" connection (static
  * headers included). mTLS transports are not supported yet.
+ *
+ * A remote transport's `auth` and `retryPolicy` are representation-only, in
+ * both SDKs: Python's converter builds its connections from url/headers
+ * alone and wires no runtime OAuth flow or MCP-session retry either, so
+ * these fields are intentionally NOT mapped into the connection here — they
+ * ride along on the Agent Spec component untouched (load → export preserves
+ * them; only the runtime connection ignores them).
  */
 export function convertClientTransport(
   agentspecTransport: ClientTransport,

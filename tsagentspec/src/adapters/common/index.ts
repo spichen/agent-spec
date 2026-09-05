@@ -32,10 +32,17 @@ export { jsonSchemasHaveSameType } from "../../property.js";
 export { buildJsonSchemaFromProperties } from "./json-schema.js";
 export {
   DEFAULT_HTTP_REQUEST_TIMEOUT_MS,
+  DEFAULT_TOTAL_ELAPSED_TIME_SECONDS,
+  MAX_RETRY_AFTER_SECONDS,
   buildTemplatedHttpRequest,
+  computeWaitSeconds,
   createRemoteToolFunc,
   fetchWithAdapterDefaults,
+  getRetryAfterSeconds,
+  isTlsOrCertError,
+  raiseForStatusWhenPolicySet,
   renderRecord,
+  requestWithRetry,
   type TemplatedHttpRequestSpec,
 } from "./tools-common.js";
 export type {

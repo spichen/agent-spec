@@ -1,13 +1,14 @@
 /**
  * ApiNode flow execution tests for the LangGraph adapter.
  *
- * Mirrors `pyagentspec/tests/adapters/langgraph/flows/test_apinode.py` with a
- * mocked fetch so every test runs offline.
+ * Mirrors `pyagentspec/tests/adapters/langgraph/flows/test_apinode.py`
+ * (allow-list enforcement included) with a mocked fetch so every test runs
+ * offline.
  *
- * Documented divergence exercised here: the TS SDK ApiNode has no
- * `urlAllowList` field yet, so the Python allow-list rejection test has no TS
- * equivalent (the adapter always calls the validation helper with
- * `undefined`).
+ * Documented divergence exercised here: the node's `retryPolicy` drives the
+ * shared retry engine and raises for a final error status (Python's
+ * ApiNodeExecutor performs a single plain request, keeping the field
+ * representation-only).
  */
 import { afterEach, describe, expect, it, vi } from "vitest";
 import {
@@ -314,6 +315,105 @@ describe("ApiNode", () => {
     );
     expect(mockFetch.calls).toHaveLength(1);
     expect(mockFetch.calls[0]!.init!.signal).toBeInstanceOf(AbortSignal);
+  });
+
+  it("enforces the url allow list on the rendered URL and suppresses the templated warning", async () => {
+    // Ports test_apinode_rejects_rendered_url_outside_allow_list (and the
+    // allowed-URL half of test_apinode_can_be_imported_and_executed).
+    const warnSpy = vi.spyOn(console, "warn").mockImplementation(() => {});
+    const inputProps = [
+      stringProperty({ title: "host" }),
+      stringProperty({ title: "order_id" }),
+    ];
+    const status = stringProperty({ title: "status" });
+    const apiNode = createApiNode({
+      name: "api",
+      url: "https://{{host}}/orders/{{order_id}}",
+      httpMethod: "GET",
+      urlAllowList: ["https://allowed.example.com/orders/"],
+      inputs: inputProps,
+      outputs: [status],
+    });
+    const flow = buildApiFlow(apiNode, inputProps, [status]);
+    const graph = await loadFlow(flow);
+    // The configured allow list suppresses the templated-destination warning.
+    expect(warnSpy).not.toHaveBeenCalled();
+
+    mockFetch = installMockFetch(() => ({ status: "ok" }));
+    const result = await graph.invoke({
+      inputs: { host: "allowed.example.com", order_id: "123" },
+    });
+    expect(outputsOf(result)).toEqual({ status: "ok" });
+    expect(mockFetch.calls[0]!.url).toBe(
+      "https://allowed.example.com/orders/123",
+    );
+
+    await expect(
+      graph.invoke({ inputs: { host: "blocked.example.com", order_id: "123" } }),
+    ).rejects.toThrow("Requested URL is not in allowed list");
+    expect(mockFetch.calls).toHaveLength(1);
+  });
+
+  it("retries per the node's retryPolicy and overrides the request timeout", async () => {
+    const timeoutSpy = vi.spyOn(AbortSignal, "timeout");
+    const status = stringProperty({ title: "status" });
+    const apiNode = createApiNode({
+      name: "api",
+      url: "https://api.example.com/orders",
+      httpMethod: "GET",
+      retryPolicy: {
+        maxAttempts: 1,
+        requestTimeout: 0.25,
+        initialRetryDelay: 0,
+        maxRetryDelay: 0,
+      },
+      outputs: [status],
+    });
+    const flow = buildApiFlow(apiNode, [], [status]);
+    const graph = await loadFlow(flow);
+
+    let call = 0;
+    mockFetch = installMockFetch(() => {
+      call += 1;
+      return call === 1
+        ? new Response('{"error": "busy"}', {
+            status: 503,
+            headers: { "Content-Type": "application/json" },
+          })
+        : { status: "ok" };
+    });
+    const result = await graph.invoke({ inputs: {} });
+
+    expect(outputsOf(result)).toEqual({ status: "ok" });
+    expect(mockFetch.calls).toHaveLength(2);
+    expect(timeoutSpy.mock.calls.map(([ms]) => ms)).toEqual([250, 250]);
+  });
+
+  it("raises for a final error status when a retryPolicy is configured", async () => {
+    const status = stringProperty({ title: "status" });
+    const apiNode = createApiNode({
+      name: "api",
+      url: "https://api.example.com/orders",
+      httpMethod: "GET",
+      retryPolicy: { maxAttempts: 0 },
+      outputs: [status],
+    });
+    const flow = buildApiFlow(apiNode, [], [status]);
+    const graph = await loadFlow(flow);
+
+    mockFetch = installMockFetch(
+      () =>
+        new Response('{"error": "busy"}', {
+          status: 503,
+          headers: { "Content-Type": "application/json" },
+        }),
+    );
+
+    await expect(graph.invoke({ inputs: {} })).rejects.toThrow(
+      "ApiNode `api` HTTP request failed with status '503' " +
+        "for url 'https://api.example.com/orders'.",
+    );
+    expect(mockFetch.calls).toHaveLength(1);
   });
 
   it("POST: string data is sent as a raw body without forcing a content type", async () => {

@@ -3,13 +3,16 @@
  *
  * Mirrors `pyagentspec/tests/adapters/langgraph/llms/test_llm_conversion.py`
  * (URL normalization matrix, ChatOpenAI/ChatOllama mapping, responses-API
- * flag, generation parameter forwarding) plus the OciGenAiConfig rejection.
+ * flag, generation parameter forwarding, the retryPolicy-to-ChatOpenAI
+ * mapping and its NotImplementedError paths) and
+ * `pyagentspec/tests/adapters/langgraph/test_bare_llmconfig_dispatch.py`
+ * (bare LlmConfig api_provider dispatch), plus the OciGenAiConfig rejection.
  * All tests run offline: models are constructed, never invoked.
  *
  * Documented divergences (see the adapter README / llm.ts header):
  * - conversion is async;
- * - the TS SDK LlmConfig has no retryPolicy, so the Python retry mapping and
- *   its NotImplementedError paths have no TS equivalent;
+ * - the JS ChatOpenAI takes its request timeout in milliseconds, so the
+ *   spec's requestTimeout seconds are multiplied by 1000;
  * - OciGenAiConfig is rejected outright (no langchain-oci JS package).
  */
 import { afterEach, describe, expect, it, vi } from "vitest";
@@ -17,6 +20,7 @@ import { ChatOllama } from "@langchain/ollama";
 import { ChatOpenAI } from "@langchain/openai";
 import {
   OpenAIAPIType,
+  createLlmConfig,
   createOciClientConfigWithApiKey,
   createOciGenAiConfig,
   createOllamaConfig,
@@ -42,6 +46,10 @@ interface ChatOpenAiProbe {
   useResponsesApi: boolean;
   modelKwargs?: Record<string, unknown>;
   clientConfig: { baseURL?: string };
+  /** Explicit retry count flows into the async caller. */
+  caller: { maxRetries: number };
+  /** JS ChatOpenAI request timeout, in milliseconds. */
+  timeout?: number;
 }
 
 async function convertToChatOpenAi(config: LlmConfig): Promise<ChatOpenAiProbe> {
@@ -273,6 +281,244 @@ describe("convertLlmConfig for OllamaConfig", () => {
     expect(
       (model as unknown as { presencePenalty?: number }).presencePenalty,
     ).toBeUndefined();
+  });
+});
+
+describe("convertLlmConfig retry policy mapping", () => {
+  afterEach(() => {
+    vi.unstubAllEnvs();
+  });
+
+  it("maps maxAttempts and requestTimeout onto ChatOpenAI retries and (ms) timeout", async () => {
+    vi.stubEnv("OPENAI_API_KEY", "DUMMY_KEY");
+    const model = await convertToChatOpenAi(
+      createOpenAiConfig({
+        name: "openai",
+        modelId: "gpt-4o-mini",
+        retryPolicy: { maxAttempts: 3, requestTimeout: 45 },
+      }),
+    );
+    expect(model.caller.maxRetries).toBe(3);
+    // The spec's requestTimeout is seconds; the JS ChatOpenAI timeout is ms.
+    expect(model.timeout).toBe(45_000);
+  });
+
+  it("leaves the timeout unset when the policy has no requestTimeout", async () => {
+    vi.stubEnv("OPENAI_API_KEY", "DUMMY_KEY");
+    const model = await convertToChatOpenAi(
+      createOpenAiConfig({
+        name: "openai",
+        modelId: "gpt-4o-mini",
+        retryPolicy: { maxAttempts: 4 },
+      }),
+    );
+    expect(model.caller.maxRetries).toBe(4);
+    expect(model.timeout).toBeUndefined();
+  });
+
+  it("applies the retry policy on VllmConfig and OpenAiCompatibleConfig too", async () => {
+    vi.stubEnv("OPENAI_API_KEY", "DUMMY_KEY");
+    const vllm = await convertToChatOpenAi(
+      createVllmConfig({
+        name: "llm",
+        modelId: "m",
+        url: "localhost:8000",
+        retryPolicy: { maxAttempts: 7 },
+      }),
+    );
+    expect(vllm.caller.maxRetries).toBe(7);
+    const compatible = await convertToChatOpenAi(
+      createOpenAiCompatibleConfig({
+        name: "oaic",
+        modelId: "m",
+        url: "https://api.compatible",
+        retryPolicy: { maxAttempts: 0, requestTimeout: 0.5 },
+      }),
+    );
+    expect(compatible.caller.maxRetries).toBe(0);
+    expect(compatible.timeout).toBe(500);
+  });
+
+  it("rejects a policy customizing fields ChatOpenAI cannot express, with the Python text", async () => {
+    await expect(
+      convertLlmConfig(
+        createOpenAiConfig({
+          name: "openai",
+          modelId: "gpt-4o-mini",
+          retryPolicy: { initialRetryDelay: 5 },
+        }),
+      ),
+    ).rejects.toThrow(
+      "LangGraph ChatOpenAI conversion supports only " +
+        "`RetryPolicy.max_attempts` and `RetryPolicy.request_timeout`. " +
+        "This is because the underlying ChatOpenAI/OpenAI client only exposes " +
+        "retry count and timeout settings. " +
+        "Unsupported retry policy fields: initial_retry_delay",
+    );
+  });
+
+  it("lists every customized unsupported field, jitter: null included", async () => {
+    await expect(
+      convertLlmConfig(
+        createOpenAiConfig({
+          name: "openai",
+          modelId: "gpt-4o-mini",
+          retryPolicy: {
+            initialRetryDelay: 2,
+            maxRetryDelay: 16,
+            backoffFactor: 3,
+            jitter: null,
+            serviceErrorRetryOnAny5xx: false,
+            recoverableStatuses: { "429": [] },
+          },
+        }),
+      ),
+    ).rejects.toThrow(
+      "Unsupported retry policy fields: initial_retry_delay, max_retry_delay, " +
+        "backoff_factor, jitter, service_error_retry_on_any_5xx, " +
+        "recoverable_statuses",
+    );
+  });
+
+  it("treats a reordered default recoverableStatuses record as the default", async () => {
+    // Python compares dicts order-insensitively; the TS deep comparison
+    // must match ({"429": [], "409": []} equals the {"409": [], "429": []}
+    // default).
+    vi.stubEnv("OPENAI_API_KEY", "DUMMY_KEY");
+    const model = await convertToChatOpenAi(
+      createOpenAiConfig({
+        name: "openai",
+        modelId: "gpt-4o-mini",
+        retryPolicy: {
+          maxAttempts: 5,
+          recoverableStatuses: { "429": [], "409": [] },
+        },
+      }),
+    );
+    expect(model.caller.maxRetries).toBe(5);
+  });
+
+  it("rejects a retry policy on OllamaConfig with the Python text", async () => {
+    await expect(
+      convertLlmConfig(
+        createOllamaConfig({
+          name: "oll",
+          modelId: "llama3.1",
+          url: "http://localhost:11434",
+          retryPolicy: { maxAttempts: 1 },
+        }),
+      ),
+    ).rejects.toThrow(
+      "LangGraph ChatOllama conversion does not support `RetryPolicy`.",
+    );
+  });
+
+  it("rejects a retry policy on OciGenAiConfig before the unsupported-type error", async () => {
+    await expect(
+      convertLlmConfig(
+        createOciGenAiConfig({
+          name: "oci",
+          modelId: "meta.llama-3.1-70b-instruct",
+          compartmentId: "ocid1.compartment.oc1..x",
+          clientConfig: createOciClientConfigWithApiKey({
+            name: "client",
+            serviceEndpoint: "https://inference.generativeai.example.com",
+            authProfile: "DEFAULT",
+            authFileLocation: "~/.oci/config",
+          }),
+          retryPolicy: { maxAttempts: 1 },
+        }),
+      ),
+    ).rejects.toThrow(
+      "LangGraph OCI GenAI conversion does not support `RetryPolicy`.",
+    );
+  });
+});
+
+describe("convertLlmConfig for the bare LlmConfig", () => {
+  // Ports pyagentspec/tests/adapters/langgraph/test_bare_llmconfig_dispatch.py.
+  afterEach(() => {
+    vi.unstubAllEnvs();
+  });
+
+  it("openai provider respects api_type responses", async () => {
+    vi.stubEnv("OPENAI_API_KEY", "DUMMY_KEY");
+    const model = await convertToChatOpenAi(
+      createLlmConfig({
+        name: "test",
+        modelId: "gpt-4o",
+        apiProvider: "openai",
+        apiType: "responses",
+      }),
+    );
+    expect(model.useResponsesApi).toBe(true);
+  });
+
+  it("openai provider defaults to chat completions", async () => {
+    vi.stubEnv("OPENAI_API_KEY", "DUMMY_KEY");
+    const model = await convertToChatOpenAi(
+      createLlmConfig({ name: "test", modelId: "gpt-4o", apiProvider: "openai" }),
+    );
+    expect(model.model).toBe("gpt-4o");
+    expect(model.useResponsesApi).toBe(false);
+    expect(model.clientConfig.baseURL).toBeUndefined();
+  });
+
+  it("openai provider forwards the base url verbatim (no /v1 normalization) and the api key", async () => {
+    const model = await convertToChatOpenAi(
+      createLlmConfig({
+        name: "test",
+        modelId: "gpt-4o",
+        apiProvider: "openai",
+        url: "https://my-proxy.example.com/v1",
+        apiKey: "sk-test-key",
+      }),
+    );
+    expect(model.clientConfig.baseURL).toBe("https://my-proxy.example.com/v1");
+    expect(model.apiKey).toBe("sk-test-key");
+  });
+
+  it("openai provider adds a scheme to a raw base url", async () => {
+    vi.stubEnv("OPENAI_API_KEY", "DUMMY_KEY");
+    const model = await convertToChatOpenAi(
+      createLlmConfig({
+        name: "test",
+        modelId: "gpt-4o",
+        apiProvider: "openai",
+        url: "localhost:8000",
+      }),
+    );
+    expect(model.clientConfig.baseURL).toBe("http://localhost:8000");
+  });
+
+  it("openai provider maps the retry policy like the dedicated configs", async () => {
+    vi.stubEnv("OPENAI_API_KEY", "DUMMY_KEY");
+    const model = await convertToChatOpenAi(
+      createLlmConfig({
+        name: "test",
+        modelId: "gpt-4o",
+        apiProvider: "openai",
+        retryPolicy: { maxAttempts: 3, requestTimeout: 45 },
+      }),
+    );
+    expect(model.caller.maxRetries).toBe(3);
+    expect(model.timeout).toBe(45_000);
+  });
+
+  it("rejects unsupported api providers with the Python text", async () => {
+    await expect(
+      convertLlmConfig(
+        createLlmConfig({
+          name: "test",
+          modelId: "some-model",
+          apiProvider: "unsupported_provider",
+        }),
+      ),
+    ).rejects.toThrow(
+      "LlmConfig with api_provider='unsupported_provider' is not yet " +
+        "supported in langgraph. Consider using a specific LlmConfig " +
+        "subclass instead.",
+    );
   });
 });
 

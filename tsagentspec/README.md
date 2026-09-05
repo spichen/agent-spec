@@ -113,17 +113,18 @@ const yaml = exporter.toYaml(compiledGraph) as string; // also: toJson, toDict, 
 | `ClientTool` | LangGraph interrupt (`client_tool_request` payload) |
 | `RemoteTool` | `fetch`-based HTTP tool |
 | `MCPTool`, `MCPToolBox` | `@langchain/mcp-adapters` tools (SSE and Streamable HTTP transports) |
-| `OpenAiConfig`, `OpenAiCompatibleConfig`, `VllmConfig` | `ChatOpenAI` |
-| `OllamaConfig` | `ChatOllama` |
+| `OpenAiConfig`, `OpenAiCompatibleConfig`, `VllmConfig` | `ChatOpenAI` (with `retryPolicy` mapped to retries/timeout) |
+| `LlmConfig` (bare, `api_provider: "openai"`) | `ChatOpenAI` |
+| `OllamaConfig` | `ChatOllama` (rejects `retryPolicy`, like Python) |
 
 `ParallelMapNode` and `ParallelFlowNode` are not supported and raise an error.
 
 ### Divergences from the Python adapter
 
 - The loader and converter APIs are async (`Promise`-based); Python is sync-first.
-- The TypeScript SDK has no `RetryPolicy` component yet, so `RemoteTool` performs a single `fetch` without the Python retry machinery. `RemoteTool`/`ApiNode` requests do not follow redirects and time out after a fixed 5 seconds (`DEFAULT_HTTP_REQUEST_TIMEOUT_MS`), matching httpx's defaults; there is no per-tool timeout override yet.
+- `RemoteTool` and `ApiNode` requests honor the spec's `RetryPolicy` (attempts, backoff with all four jitter modes, `Retry-After` with the 30s cap, recoverable statuses with response-body code matching, per-request `requestTimeout` override, no retry on TLS failures) and enforce `urlAllowList` on every rendered URL; a configured allow list suppresses the templated-URL warning, like Python. `ApiNode` retries diverge from Python, whose executor performs a single plain request. Requests do not follow redirects and default to a 5-second timeout (`DEFAULT_HTTP_REQUEST_TIMEOUT_MS`), matching httpx's defaults.
 - When exporting a LangGraph graph whose conditional edge collides with a real node literally named `condition`, the synthetic conditional/branching node names are suffixed (`condition_1`, ...) so the real node keeps its edges; the Python-style names are used otherwise.
-- The TypeScript SDK has no `urlAllowList` field on `RemoteTool`/`ApiNode` yet, so URL allow-list enforcement is not available (the warning about templated URLs without an allow list still fires).
+- MCP transport `auth` and `retryPolicy` are representation-only (as in Python): they survive load → export untouched but are not wired into the MCP connection.
 - `OciGenAiConfig` is not supported (no `langchain-oci` package for JS).
 - The MCP mTLS transports (`SSEmTLSTransport`, `StreamableHTTPmTLSTransport`) are not supported.
 - Tracing is a no-op seam only; no execution spans or events are emitted yet.

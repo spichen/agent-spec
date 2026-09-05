@@ -2,18 +2,20 @@
  * RemoteTool / ClientTool conversion tests for the LangGraph adapter.
  *
  * Mirrors the RemoteTool sections of
- * `pyagentspec/tests/adapters/langgraph/test_tools.py` with a mocked global
- * fetch (JS equivalent of patching `httpx.request`): template rendering in
- * url/data/headers/queryParams, body routing (urlencoded form vs raw string
- * vs JSON), the confirmation-interrupt machinery and the ClientTool
- * interrupt protocol.
+ * `pyagentspec/tests/adapters/langgraph/test_tools.py` and the retry-policy
+ * matrix of `pyagentspec/tests/adapters/test_remote_tool_retry_policy_cases.py`
+ * with a mocked global fetch (JS equivalent of patching `httpx.request`):
+ * template rendering in url/data/headers/queryParams, body routing
+ * (urlencoded form vs raw string vs JSON), retry-policy behavior (per-tool
+ * timeouts, transport-error and recoverable-status retries, Retry-After,
+ * TLS no-retry, raise-for-status), URL allow-list enforcement, the
+ * confirmation-interrupt machinery and the ClientTool interrupt protocol.
  *
  * Documented divergences exercised here (see tools.ts / tools-common.ts):
- * - a single fetch attempt, no retry engine (TS SDK has no RetryPolicy);
  * - fetch forbids GET/HEAD bodies, so none is sent for those methods;
  * - confirmation `Args:` strings use JSON.stringify (Python uses str(dict)).
  */
-import { afterEach, describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import type { StructuredToolInterface } from "@langchain/core/tools";
 import {
   Annotation,
@@ -51,6 +53,8 @@ let mockFetch: MockFetchController | undefined;
 afterEach(() => {
   mockFetch?.restore();
   mockFetch = undefined;
+  vi.restoreAllMocks();
+  vi.useRealTimers();
 });
 
 function headersOf(init: RequestInit | undefined): Record<string, string> {
@@ -291,9 +295,10 @@ describe("convertRemoteTool responses", () => {
   });
 
   it("parses and returns the JSON body of non-2xx responses like Python", async () => {
-    // Python without a retry policy (the only state the TS RemoteTool can
-    // express) returns response.json() for every status, so the agent sees
-    // error payloads as the tool result instead of an aborted run.
+    // Python without a retry policy returns response.json() for every
+    // status, so the agent sees error payloads as the tool result instead of
+    // an aborted run (with a policy, a final error status raises — see the
+    // retry-policy suite below).
     mockFetch = installMockFetch(
       () =>
         new Response('{"error": "bad date range"}', {
@@ -345,9 +350,9 @@ describe("convertRemoteTool responses", () => {
   });
 
   it("attaches the default httpx-parity timeout and names the tool on a timeout abort", async () => {
-    // Python's httpx applies a 5s default timeout; the TS SDK RemoteTool has
-    // no RetryPolicy.requestTimeout yet, so the exported constant is the only
-    // knob and a timeout abort maps to an Error naming the tool.
+    // Python's httpx applies a 5s default timeout; without a
+    // RetryPolicy.requestTimeout override the exported constant is the knob
+    // and a timeout abort maps to an Error naming the tool.
     expect(DEFAULT_HTTP_REQUEST_TIMEOUT_MS).toBe(5000);
     mockFetch = installMockFetch(() => {
       throw new DOMException(
@@ -405,6 +410,283 @@ describe("convertRemoteTool responses", () => {
       "Received tool input did not match expected schema",
     );
     expect(mockFetch.calls).toHaveLength(0);
+  });
+});
+
+describe("convertRemoteTool retry policy", () => {
+  // Ports pyagentspec/tests/adapters/test_remote_tool_retry_policy_cases.py
+  // through the LangGraph wrapper (Python's adapters subclass the shared
+  // case class the same way).
+  function makeRetryTool(
+    retryPolicy?: Parameters<typeof createRemoteTool>[0]["retryPolicy"],
+  ) {
+    return createRemoteTool({
+      name: "retry_service",
+      description: "A remote service with retry policy",
+      url: "https://example.com/api",
+      httpMethod: "GET",
+      ...(retryPolicy !== undefined ? { retryPolicy } : {}),
+    });
+  }
+
+  function jsonResponse(
+    body: unknown,
+    status: number,
+    headers: Record<string, string> = {},
+  ): Response {
+    return new Response(JSON.stringify(body), {
+      status,
+      headers: { "Content-Type": "application/json", ...headers },
+    });
+  }
+
+  it.each([
+    ["a policy with requestTimeout", { maxAttempts: 0, requestTimeout: 300 }, 300_000],
+    ["a policy without requestTimeout", { maxAttempts: 0 }, 5000],
+    ["no policy", undefined, 5000],
+  ] as const)(
+    "passes the per-tool request timeout for %s",
+    async (_label, retryPolicy, expectedTimeoutMs) => {
+      const timeoutSpy = vi.spyOn(AbortSignal, "timeout");
+      mockFetch = installMockFetch(() => ({ result: "ok" }));
+
+      await expect(
+        convertRemoteTool(makeRetryTool(retryPolicy)).invoke({}),
+      ).resolves.toEqual({ result: "ok" });
+
+      expect(timeoutSpy).toHaveBeenCalledTimes(1);
+      expect(timeoutSpy).toHaveBeenCalledWith(expectedTimeoutMs);
+    },
+  );
+
+  it("retries transport errors and applies the timeout override to every attempt", async () => {
+    const timeoutSpy = vi.spyOn(AbortSignal, "timeout");
+    let call = 0;
+    mockFetch = installMockFetch(() => {
+      call += 1;
+      if (call <= 2) {
+        throw new TypeError("temporary failure");
+      }
+      return { result: "ok" };
+    });
+    const remoteTool = makeRetryTool({
+      maxAttempts: 2,
+      requestTimeout: 0.5,
+      initialRetryDelay: 0,
+      maxRetryDelay: 0,
+    });
+
+    await expect(convertRemoteTool(remoteTool).invoke({})).resolves.toEqual({
+      result: "ok",
+    });
+    expect(mockFetch.calls).toHaveLength(3);
+    expect(timeoutSpy.mock.calls.map(([ms]) => ms)).toEqual([500, 500, 500]);
+  });
+
+  it("retries a 5xx service error under the default recoverable rules", async () => {
+    let call = 0;
+    mockFetch = installMockFetch(() => {
+      call += 1;
+      return call === 1
+        ? jsonResponse({ error: "busy" }, 503)
+        : { result: "ok" };
+    });
+    const remoteTool = makeRetryTool({
+      maxAttempts: 1,
+      initialRetryDelay: 0,
+      maxRetryDelay: 0,
+    });
+
+    await expect(convertRemoteTool(remoteTool).invoke({})).resolves.toEqual({
+      result: "ok",
+    });
+    expect(mockFetch.calls).toHaveLength(2);
+  });
+
+  it("retries a configured status only when the body carries a recoverable error code", async () => {
+    let call = 0;
+    mockFetch = installMockFetch(() => {
+      call += 1;
+      return call === 1
+        ? jsonResponse({ code: "TooManyRequests", message: "throttled" }, 429)
+        : { result: "ok" };
+    });
+    const remoteTool = makeRetryTool({
+      maxAttempts: 1,
+      initialRetryDelay: 0,
+      maxRetryDelay: 0,
+      serviceErrorRetryOnAny5xx: false,
+      recoverableStatuses: { "429": ["TooManyRequests"] },
+    });
+
+    await expect(convertRemoteTool(remoteTool).invoke({})).resolves.toEqual({
+      result: "ok",
+    });
+    expect(mockFetch.calls).toHaveLength(2);
+  });
+
+  it("honors Retry-After delays, capped at 30 seconds", async () => {
+    vi.useFakeTimers();
+    let call = 0;
+    mockFetch = installMockFetch(() => {
+      call += 1;
+      return call === 1
+        ? jsonResponse({ error: "throttled" }, 429, { "Retry-After": "45" })
+        : { result: "ok" };
+    });
+    const remoteTool = makeRetryTool({
+      maxAttempts: 1,
+      initialRetryDelay: 0,
+      maxRetryDelay: 0,
+      recoverableStatuses: { "429": [] },
+    });
+
+    let settled = false;
+    const resultPromise = convertRemoteTool(remoteTool)
+      .invoke({})
+      .finally(() => {
+        settled = true;
+      });
+    // The 45s Retry-After is capped at 30s: one millisecond earlier the
+    // retry has not fired yet.
+    await vi.advanceTimersByTimeAsync(29_999);
+    expect(settled).toBe(false);
+    expect(mockFetch.calls).toHaveLength(1);
+    await vi.advanceTimersByTimeAsync(1);
+    await expect(resultPromise).resolves.toEqual({ result: "ok" });
+    expect(mockFetch.calls).toHaveLength(2);
+  });
+
+  it("raises for the final status after recoverable retries are exhausted", async () => {
+    let call = 0;
+    mockFetch = installMockFetch(() => {
+      call += 1;
+      return call === 1
+        ? jsonResponse({ error: "busy" }, 503)
+        : jsonResponse({ error: "still busy" }, 503);
+    });
+    const remoteTool = makeRetryTool({
+      maxAttempts: 1,
+      initialRetryDelay: 0,
+      maxRetryDelay: 0,
+    });
+
+    await expect(convertRemoteTool(remoteTool).invoke({})).rejects.toThrow(
+      "RemoteTool `retry_service` HTTP request failed with status '503' " +
+        "for url 'https://example.com/api'.",
+    );
+    expect(mockFetch.calls).toHaveLength(2);
+  });
+
+  it("raises immediately for a non-retryable status when a policy is set", async () => {
+    // 400/401/403/422 (and 501) are never retried, and with a policy the
+    // error status raises instead of flowing back as the tool result.
+    mockFetch = installMockFetch(() => jsonResponse({ error: "bad" }, 400));
+    const remoteTool = makeRetryTool({
+      maxAttempts: 2,
+      initialRetryDelay: 0,
+      maxRetryDelay: 0,
+    });
+
+    await expect(convertRemoteTool(remoteTool).invoke({})).rejects.toThrow(
+      /400/,
+    );
+    expect(mockFetch.calls).toHaveLength(1);
+  });
+
+  it("does not retry TLS certificate failures", async () => {
+    // undici wraps the TLS failure in `TypeError: fetch failed` with the
+    // real error on `cause` (Python walks `__cause__` the same way).
+    mockFetch = installMockFetch(() => {
+      throw new TypeError("fetch failed", {
+        cause: Object.assign(
+          new Error("unable to verify the first certificate"),
+          { code: "UNABLE_TO_VERIFY_LEAF_SIGNATURE" },
+        ),
+      });
+    });
+    const remoteTool = makeRetryTool({
+      maxAttempts: 2,
+      initialRetryDelay: 0,
+      maxRetryDelay: 0,
+    });
+
+    await expect(convertRemoteTool(remoteTool).invoke({})).rejects.toThrow(
+      "fetch failed",
+    );
+    expect(mockFetch.calls).toHaveLength(1);
+  });
+
+  it("rethrows the transport error once retries are exhausted", async () => {
+    mockFetch = installMockFetch(() => {
+      throw new TypeError("temporary failure");
+    });
+    const remoteTool = makeRetryTool({
+      maxAttempts: 1,
+      initialRetryDelay: 0,
+      maxRetryDelay: 0,
+    });
+
+    await expect(convertRemoteTool(remoteTool).invoke({})).rejects.toThrow(
+      "temporary failure",
+    );
+    expect(mockFetch.calls).toHaveLength(2);
+  });
+});
+
+describe("convertRemoteTool url allow list", () => {
+  // Ports the allow-list tests of
+  // pyagentspec/tests/adapters/langgraph/test_tools.py.
+  function makeAllowListTool(urlAllowList?: string[]) {
+    return createRemoteTool({
+      name: "lookup",
+      description: "Looks up remote data",
+      url: "https://{{host}}/api/value",
+      httpMethod: "GET",
+      inputs: [stringProperty({ title: "host" })],
+      ...(urlAllowList !== undefined ? { urlAllowList } : {}),
+    });
+  }
+
+  it("rejects a rendered URL outside the allow list without calling fetch", async () => {
+    mockFetch = installMockFetch(() => ({ ok: true }));
+    const langchainTool = convertRemoteTool(
+      makeAllowListTool(["https://allowed.example.com/api/"]),
+    );
+
+    await expect(
+      langchainTool.invoke({ host: "blocked.example.com" }),
+    ).rejects.toThrow(
+      "Requested URL is not in allowed list. Please contact the application " +
+        "administrator to help adding your URL to the list.",
+    );
+    expect(mockFetch.calls).toHaveLength(0);
+  });
+
+  it("allows a rendered URL matching an allow-list entry", async () => {
+    mockFetch = installMockFetch(() => ({ ok: true }));
+    const langchainTool = convertRemoteTool(
+      makeAllowListTool(["https://allowed.example.com/api/"]),
+    );
+
+    await expect(
+      langchainTool.invoke({ host: "allowed.example.com" }),
+    ).resolves.toEqual({ ok: true });
+    expect(mockFetch.calls[0]!.url).toBe("https://allowed.example.com/api/value");
+  });
+
+  it("suppresses the templated-destination warning when an allow list is configured", async () => {
+    const warnSpy = vi.spyOn(console, "warn").mockImplementation(() => {});
+
+    convertRemoteTool(makeAllowListTool(["https://allowed.example.com/api/"]));
+    expect(warnSpy).not.toHaveBeenCalled();
+
+    convertRemoteTool(makeAllowListTool());
+    expect(warnSpy).toHaveBeenCalledWith(
+      expect.stringContaining(
+        "RemoteTool `lookup` uses placeholders in the URL destination",
+      ),
+    );
   });
 });
 

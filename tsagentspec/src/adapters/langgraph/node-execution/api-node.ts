@@ -7,24 +7,28 @@
  * sites).
  *
  * Divergences from Python (see the adapter README):
- * - The TS SDK ApiNode has no `urlAllowList` field, so the allow-list helpers
- *   are invoked with `undefined` (i.e. allow) and the templated-URL warning
- *   fires per the Python rules.
  * - `fetch` forbids request bodies on GET/HEAD (Python's httpx sends them):
  *   the declared body is not sent for those methods and a warning is emitted
  *   instead of silently dropping it.
+ * - The node's `retryPolicy` drives the shared retry engine (and raises for
+ *   a final error status): Python's ApiNodeExecutor performs a single plain
+ *   request, leaving the ApiNode retry policy representation-only.
  *
  * Python-parity network behavior (NOT divergences): redirects are not
- * followed and requests time out after the shared httpx-parity default — see
- * `fetchWithAdapterDefaults`.
+ * followed and requests time out after the shared httpx-parity default
+ * (overridden by `retryPolicy.requestTimeout`) — see
+ * `fetchWithAdapterDefaults`. The node's `urlAllowList` is enforced on the
+ * rendered URL and suppresses the templated-destination warning, like
+ * Python.
  */
 import type { BaseMessage } from "@langchain/core/messages";
 import type { ApiNode } from "../../../flows/index.js";
 import {
   buildTemplatedHttpRequest,
-  fetchWithAdapterDefaults,
   isRecordLike,
   maybeWarnAboutUnrestrictedTemplatedUrl,
+  raiseForStatusWhenPolicySet,
+  requestWithRetry,
 } from "../../common/index.js";
 import type { ExecuteOutput, NodeOutputs } from "../types.js";
 import { NodeExecutor } from "./executor.js";
@@ -37,12 +41,11 @@ import { NodeExecutor } from "./executor.js";
 export class ApiNodeExecutor extends NodeExecutor<ApiNode> {
   constructor(node: ApiNode) {
     super(node);
-    // The TS SDK ApiNode has no urlAllowList field yet: the helpers are
-    // invoked with `undefined` (i.e. allow), matching the documented
-    // divergence, so the templated-URL warning fires per the Python rules.
+    // A configured allow list suppresses the templated-destination warning,
+    // exactly like Python.
     maybeWarnAboutUnrestrictedTemplatedUrl(
       node.url,
-      undefined,
+      node.urlAllowList,
       `ApiNode \`${node.name}\``,
     );
   }
@@ -70,14 +73,24 @@ export class ApiNodeExecutor extends NodeExecutor<ApiNode> {
       );
     }
     // Redirects are not followed and the request times out after the shared
-    // default, matching Python's httpx defaults (see fetchWithAdapterDefaults).
-    const response = await fetchWithAdapterDefaults(
+    // default unless retryPolicy.requestTimeout overrides it, matching
+    // Python's httpx defaults (see fetchWithAdapterDefaults). The node's
+    // retryPolicy drives the shared retry engine.
+    const response = await requestWithRetry(
+      this.node.retryPolicy,
       url,
       init,
       `ApiNode \`${this.node.name}\``,
     );
-    // Python parses the JSON body regardless of the HTTP status (a 3xx
-    // response returned without following included).
+    // With a retry policy a final error status raises; without one Python
+    // parses the JSON body regardless of the HTTP status (a 3xx response
+    // returned without following included).
+    raiseForStatusWhenPolicySet(
+      this.node.retryPolicy,
+      response,
+      `ApiNode \`${this.node.name}\``,
+      url,
+    );
     const responseJson = (await response.json()) as unknown;
     return [responseJson as NodeOutputs, {}];
   }

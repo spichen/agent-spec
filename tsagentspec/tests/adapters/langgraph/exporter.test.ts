@@ -222,6 +222,74 @@ describe("AgentSpecExporter: chat models", () => {
     expect(config.apiType).toBe(OpenAIAPIType.RESPONSES);
   });
 
+  it("exports explicit ChatOpenAI maxRetries and (ms) timeout as a retryPolicy", () => {
+    const exporter = new AgentSpecExporter();
+    const model = new ChatOpenAI({
+      model: MODEL_ID,
+      apiKey: "EMPTY",
+      maxRetries: 5,
+      timeout: 45_000,
+      configuration: { baseURL: LLAMA_URL },
+    });
+
+    const config = exporter.toComponent(model) as OpenAiCompatibleConfig;
+
+    expect(config.retryPolicy?.maxAttempts).toBe(5);
+    // The JS ChatOpenAI timeout is milliseconds; the spec's requestTimeout
+    // is seconds.
+    expect(config.retryPolicy?.requestTimeout).toBe(45);
+  });
+
+  it("exports a timeout-only ChatOpenAI with the default retry count", () => {
+    const exporter = new AgentSpecExporter();
+    const model = new ChatOpenAI({
+      model: "gpt-4o-mini",
+      apiKey: "sk-test",
+      timeout: 30_000,
+      configuration: { baseURL: "https://api.openai.com/v1" },
+    });
+
+    const config = exporter.toComponent(model) as OpenAiConfig;
+
+    expect(config.componentType).toBe("OpenAiConfig");
+    expect(config.retryPolicy?.maxAttempts).toBe(2);
+    expect(config.retryPolicy?.requestTimeout).toBe(30);
+  });
+
+  it("omits the retryPolicy when retries and timeout sit at their defaults", () => {
+    const exporter = new AgentSpecExporter();
+
+    const defaultConfig = exporter.toComponent(
+      makeChatOpenAI(),
+    ) as OpenAiCompatibleConfig;
+    expect("retryPolicy" in defaultConfig).toBe(false);
+
+    // An explicit maxRetries equal to the RetryPolicy default (2) is not a
+    // customization, like Python's default-comparison.
+    const explicitDefault = exporter.toComponent(
+      new ChatOpenAI({
+        model: MODEL_ID,
+        apiKey: "EMPTY",
+        maxRetries: 2,
+        configuration: { baseURL: LLAMA_URL },
+      }),
+    ) as OpenAiCompatibleConfig;
+    expect("retryPolicy" in explicitDefault).toBe(false);
+  });
+
+  it("rejects a non-scalar ChatOpenAI timeout with the Python text", () => {
+    const exporter = new AgentSpecExporter();
+    const model = makeChatOpenAI();
+    // The JS field is typed number, so a non-scalar can only arrive through
+    // an unsound cast — mirror Python's httpx.Timeout rejection anyway.
+    (model as unknown as { timeout: unknown }).timeout = { read: 10 };
+
+    expect(() => exporter.toComponent(model)).toThrow(
+      "LangGraph ChatOpenAI timeout conversion supports only a single timeout value " +
+        "because Agent Spec `RetryPolicy.request_timeout` exposes one per-request timeout.",
+    );
+  });
+
   it("converts ChatOllama to OllamaConfig with base url and model id", () => {
     const exporter = new AgentSpecExporter();
     const model = new ChatOllama({
