@@ -17,11 +17,18 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import { RetryPolicySchema, type RetryPolicy } from "../../../src/index.js";
 import { isRecordLike } from "../../../src/adapters/common/guards.js";
 import {
+  MAX_HTTP_ATTEMPTS_PER_CALL,
+  MAX_HTTP_REQUEST_TIMEOUT_MS,
   MAX_RETRY_AFTER_SECONDS,
+  MIN_RETRY_DELAY_SECONDS,
   buildTemplatedHttpRequest,
+  clampRequestTimeoutMs,
   computeWaitSeconds,
   getRetryAfterSeconds,
+  isNonRetryableLocalError,
   isTlsOrCertError,
+  raiseForStatusWhenPolicySet,
+  redactUrlQuery,
   requestWithRetry,
 } from "../../../src/adapters/common/tools-common.js";
 
@@ -124,10 +131,17 @@ describe("getRetryAfterSeconds", () => {
   // The malformed-header edges below deliberately diverge from Python — see
   // the getRetryAfterSeconds docstring and the adapter README.
 
-  it("clamps a negative numeric value (invalid per RFC 9110) to an immediate retry", () => {
+  it("treats a negative numeric value (invalid per RFC 9110) as an absent header", () => {
     // Python returns -5 and lets time.sleep(-5) raise, failing the call.
-    expect(getRetryAfterSeconds("-5")).toBe(0);
-    expect(getRetryAfterSeconds("-0.1")).toBe(0);
+    // Returning null here makes the caller fall back to the configured
+    // backoff: honoring the value as a zero-second wait would let a hostile
+    // server erase the operator's backoff and drive the retry loop at speed.
+    expect(getRetryAfterSeconds("-5")).toBeNull();
+    expect(getRetryAfterSeconds("-0.1")).toBeNull();
+  });
+
+  it("keeps a legitimate zero-second Retry-After", () => {
+    expect(getRetryAfterSeconds("0")).toBe(0);
   });
 
   it("treats infinite numeric values as unparsable (Python's float() caps them at 30)", () => {
@@ -309,5 +323,166 @@ describe("requestWithRetry backoff and elapsed cap", () => {
 
     expect(response.status).toBe(503);
     expect(calls).toHaveLength(1);
+  });
+});
+
+describe("retry engine bounds against untrusted specs", () => {
+  afterEach(() => {
+    vi.restoreAllMocks();
+    vi.useRealTimers();
+  });
+
+  it("clamps a per-attempt timeout to a value a timer can express", () => {
+    // AbortSignal.timeout throws a RangeError for these, which the retry loop
+    // would otherwise treat as a transient transport failure.
+    expect(clampRequestTimeoutMs(Infinity)).toBe(MAX_HTTP_REQUEST_TIMEOUT_MS);
+    expect(clampRequestTimeoutMs(1e308)).toBe(MAX_HTTP_REQUEST_TIMEOUT_MS);
+    // (2^31, 2^32) ms silently degrades to a 1ms timer in Node.
+    expect(clampRequestTimeoutMs(3_000_000_000)).toBe(
+      MAX_HTTP_REQUEST_TIMEOUT_MS,
+    );
+    expect(clampRequestTimeoutMs(0.4)).toBe(1);
+    expect(clampRequestTimeoutMs(5000)).toBe(5000);
+    expect(() => AbortSignal.timeout(clampRequestTimeoutMs(Infinity))).not.toThrow();
+  });
+
+  it("rejects a non-finite requestTimeout at the schema boundary", () => {
+    expect(() => RetryPolicySchema.parse({ requestTimeout: Infinity })).toThrow();
+    expect(() => RetryPolicySchema.parse({ requestTimeout: NaN })).toThrow();
+    expect(RetryPolicySchema.parse({ requestTimeout: 30 }).requestTimeout).toBe(30);
+  });
+
+  it("does not retry an out-of-range timer error", () => {
+    // A RangeError is never a transport failure; retrying it spins the loop
+    // without producing any network traffic.
+    expect(isNonRetryableLocalError(new RangeError("out of range"))).toBe(true);
+    // A bare TypeError stays retryable: test doubles and non-undici fetch
+    // implementations raise those for simulated network errors.
+    expect(isNonRetryableLocalError(new TypeError("temporary failure"))).toBe(
+      false,
+    );
+  });
+
+  it("caps the number of attempts however large maxAttempts is", async () => {
+    vi.useFakeTimers();
+    let calls = 0;
+    globalThis.fetch = vi.fn(async () => {
+      calls += 1;
+      return new Response("{}", { status: 503 });
+    }) as typeof fetch;
+    const policy = makeRetryPolicy({
+      maxAttempts: 1_000_000_000,
+      initialRetryDelay: 0,
+      maxRetryDelay: 0,
+      jitter: null,
+      serviceErrorRetryOnAny5xx: true,
+    });
+
+    const pending = requestWithRetry(policy, "https://x/", {}, "T");
+    await vi.runAllTimersAsync();
+    await pending;
+
+    expect(calls).toBe(MAX_HTTP_ATTEMPTS_PER_CALL);
+  });
+
+  it("floors the wait between attempts when the spec configures zero delays", async () => {
+    vi.useFakeTimers();
+    const waits: number[] = [];
+    const setTimeoutSpy = vi
+      .spyOn(globalThis, "setTimeout")
+      .mockImplementation(((fn: () => void, ms?: number) => {
+        waits.push(ms ?? 0);
+        fn();
+        return 0 as unknown as ReturnType<typeof setTimeout>;
+      }) as typeof setTimeout);
+    globalThis.fetch = vi.fn(
+      async () => new Response("{}", { status: 503 }),
+    ) as typeof fetch;
+    const policy = makeRetryPolicy({
+      maxAttempts: 3,
+      initialRetryDelay: 0,
+      maxRetryDelay: 0,
+      jitter: null,
+      serviceErrorRetryOnAny5xx: true,
+    });
+
+    await requestWithRetry(policy, "https://x/", {}, "T");
+
+    expect(waits.length).toBeGreaterThan(0);
+    for (const wait of waits) {
+      expect(wait).toBeGreaterThanOrEqual(MIN_RETRY_DELAY_SECONDS * 1000);
+    }
+    setTimeoutSpy.mockRestore();
+  });
+
+  it("falls back to backoff when a server sends a negative Retry-After", async () => {
+    vi.useFakeTimers();
+    const waits: number[] = [];
+    const setTimeoutSpy = vi
+      .spyOn(globalThis, "setTimeout")
+      .mockImplementation(((fn: () => void, ms?: number) => {
+        waits.push(ms ?? 0);
+        fn();
+        return 0 as unknown as ReturnType<typeof setTimeout>;
+      }) as typeof setTimeout);
+    globalThis.fetch = vi.fn(
+      async () =>
+        new Response("{}", { status: 503, headers: { "Retry-After": "-1" } }),
+    ) as typeof fetch;
+    const policy = makeRetryPolicy({
+      maxAttempts: 2,
+      initialRetryDelay: 1,
+      maxRetryDelay: 8,
+      jitter: null,
+      serviceErrorRetryOnAny5xx: true,
+    });
+
+    await requestWithRetry(policy, "https://x/", {}, "T");
+
+    // The configured 1s backoff applies; the hostile header does not erase it.
+    expect(waits[0]).toBeGreaterThanOrEqual(1000);
+    setTimeoutSpy.mockRestore();
+  });
+
+  it("treats a TLS handshake failure as non-retryable, like a bad certificate", () => {
+    const handshakeFailure = new TypeError("fetch failed", {
+      cause: Object.assign(new Error("wrong version number"), {
+        code: "ERR_SSL_WRONG_VERSION_NUMBER",
+      }),
+    });
+    expect(isTlsOrCertError(handshakeFailure)).toBe(true);
+  });
+});
+
+describe("error messages do not leak query secrets", () => {
+  it("redacts the query string from a non-2xx tool error", () => {
+    const policy = makeRetryPolicy({});
+    const response = new Response("nope", { status: 401 });
+
+    expect(() =>
+      raiseForStatusWhenPolicySet(
+        policy,
+        response,
+        "RemoteTool `leak`",
+        "https://api.example.com/v1/x?api_key=SECRET&token=ALSO_SECRET",
+      ),
+    ).toThrow(/https:\/\/api\.example\.com\/v1\/x\?<redacted>/);
+
+    try {
+      raiseForStatusWhenPolicySet(
+        policy,
+        response,
+        "RemoteTool `leak`",
+        "https://api.example.com/v1/x?api_key=SECRET",
+      );
+    } catch (error) {
+      expect((error as Error).message).not.toContain("SECRET");
+    }
+  });
+
+  it("leaves a URL without a query string intact", () => {
+    expect(redactUrlQuery("https://api.example.com/v1/x")).toBe(
+      "https://api.example.com/v1/x",
+    );
   });
 });

@@ -51,6 +51,41 @@ export const DEFAULT_TOTAL_ELAPSED_TIME_SECONDS = 600;
 export const MAX_RETRY_AFTER_SECONDS = 30;
 
 /**
+ * Largest per-attempt timeout a timer can actually express, in milliseconds.
+ *
+ * `AbortSignal.timeout` throws a `RangeError` for a non-integer or out-of-range
+ * delay, and Node silently degrades a delay in `(2^31, 2^32)` ms to 1ms while
+ * reporting the requested value. Timeouts are clamped to this bound so neither
+ * happens: an untrusted spec cannot turn `requestTimeout` into a thrown
+ * `RangeError` (which the retry loop would otherwise treat as transient) or
+ * into a 1ms budget masquerading as a large one.
+ */
+export const MAX_HTTP_REQUEST_TIMEOUT_MS = 2 ** 31 - 1;
+
+/**
+ * Cap on the number of HTTP attempts one call may make, regardless of the
+ * spec's `RetryPolicy.maxAttempts`.
+ *
+ * Divergence from Python, which bounds only elapsed time: spec files are
+ * untrusted input, and `max_attempts` is unbounded in both SDKs, so a hostile
+ * spec could otherwise turn a single tool call into a request flood (the
+ * elapsed-time cap alone permits hundreds of thousands of requests when the
+ * configured delays are zero). Legitimate policies stay far below this bound.
+ */
+export const MAX_HTTP_ATTEMPTS_PER_CALL = 100;
+
+/**
+ * Floor (seconds) on the wait between two attempts of the same call.
+ *
+ * Divergence from Python: a spec may configure `initial_retry_delay` and
+ * `max_retry_delay` to 0, and a hostile server may send `Retry-After: 0`, both
+ * of which would otherwise let one call retry as fast as the event loop allows.
+ * The floor bounds the outbound request RATE; `MAX_HTTP_ATTEMPTS_PER_CALL`
+ * bounds the total.
+ */
+export const MIN_RETRY_DELAY_SECONDS = 0.05;
+
+/**
  * Perform one `fetch` with the adapter's Python-parity network behavior:
  *
  * - Redirects are NOT followed (`redirect: "manual"`): Node's undici then
@@ -68,11 +103,12 @@ export async function fetchWithAdapterDefaults(
   requesterDescription: string,
   timeoutMs: number = DEFAULT_HTTP_REQUEST_TIMEOUT_MS,
 ): Promise<Response> {
+  const boundedTimeoutMs = clampRequestTimeoutMs(timeoutMs);
   try {
     return await fetch(url, {
       ...init,
       redirect: "manual",
-      signal: AbortSignal.timeout(timeoutMs),
+      signal: AbortSignal.timeout(boundedTimeoutMs),
     });
   } catch (error) {
     // AbortSignal.timeout aborts with a DOMException named "TimeoutError".
@@ -82,11 +118,42 @@ export async function fetchWithAdapterDefaults(
       (error as { name?: unknown }).name === "TimeoutError"
     ) {
       throw new Error(
-        `${requesterDescription} HTTP request timed out after ${timeoutMs}ms.`,
+        `${requesterDescription} HTTP request timed out after ${boundedTimeoutMs}ms.`,
       );
     }
     throw error;
   }
+}
+
+/**
+ * Clamp a per-attempt timeout into the range a timer can express.
+ *
+ * Applied at the `fetch` call site rather than only in the schema so a policy
+ * built in code (not parsed from a spec) cannot reach the same broken states.
+ */
+export function clampRequestTimeoutMs(timeoutMs: number): number {
+  if (!Number.isFinite(timeoutMs) || timeoutMs > MAX_HTTP_REQUEST_TIMEOUT_MS) {
+    return MAX_HTTP_REQUEST_TIMEOUT_MS;
+  }
+  return Math.max(1, Math.round(timeoutMs));
+}
+
+/**
+ * Whether an error was raised while CONSTRUCTING the request, before any
+ * network activity. Such an error fails identically on every attempt, so
+ * retrying it only burns the elapsed budget.
+ *
+ * Only `RangeError` is classified here, because it is unambiguous: `fetch`
+ * never reports a transport failure that way, while an out-of-range timer
+ * delay does. A cause-less `TypeError` is deliberately NOT treated as local —
+ * undici attaches a `cause` to real transport failures, but test doubles and
+ * non-undici fetch implementations raise bare `TypeError`s for simulated
+ * network errors, and those must stay retryable. Permanently-failing
+ * `TypeError`s (e.g. a URL carrying credentials) are bounded instead by
+ * `MAX_HTTP_ATTEMPTS_PER_CALL` and `MIN_RETRY_DELAY_SECONDS`.
+ */
+export function isNonRetryableLocalError(error: unknown): boolean {
+  return error instanceof RangeError;
 }
 
 /**
@@ -106,6 +173,16 @@ const TLS_ERROR_PATTERNS: readonly string[] = [
   "unable to get local issuer certificate",
   "certificate has expired",
   "altname",
+  // TLS handshake failures (e.g. an https:// URL pointed at a plain-HTTP
+  // port). Retrying cannot fix them either, and without these an untrusted
+  // spec aimed at an internal port retries for the full elapsed budget.
+  // Divergence from Python, whose pattern list covers only cert validation.
+  "err_ssl_wrong_version_number",
+  "wrong version number",
+  "ssl routines",
+  "sslv3 alert",
+  "tlsv1 alert",
+  "packet length too long",
 ];
 
 /**
@@ -230,7 +307,15 @@ export function getRetryAfterSeconds(
   if (trimmed !== "") {
     const numericValue = Number(trimmed);
     if (Number.isFinite(numericValue)) {
-      return Math.min(Math.max(0, numericValue), MAX_RETRY_AFTER_SECONDS);
+      // A negative delay is invalid per RFC 9110, and must be treated as an
+      // ABSENT header so the configured backoff applies. Honoring it as a
+      // zero-second wait would let a hostile server erase the operator's
+      // backoff and drive the retry loop at full speed. A legitimate `0`
+      // still means "retry immediately" (subject to the delay floor).
+      if (numericValue < 0) {
+        return null;
+      }
+      return Math.min(numericValue, MAX_RETRY_AFTER_SECONDS);
     }
   }
   const retryAfterDateMs = Date.parse(retryAfterValue);
@@ -300,9 +385,14 @@ function computeWaitBeforeNextAttempt(
   retryAfterValue: string | null,
   timeStartedMs: number,
 ): number | null {
-  const waitTimeSeconds =
+  const waitTimeSeconds = Math.max(
     getRetryAfterSeconds(retryAfterValue) ??
-    computeWaitSeconds(retryPolicy, attemptNum, statusCode);
+      computeWaitSeconds(retryPolicy, attemptNum, statusCode),
+    // Bound the outbound request rate: zero configured delays (or a server
+    // sending `Retry-After: 0`) must not let one call retry as fast as the
+    // event loop allows. See MIN_RETRY_DELAY_SECONDS.
+    MIN_RETRY_DELAY_SECONDS,
+  );
 
   const remainingSeconds =
     DEFAULT_TOTAL_ELAPSED_TIME_SECONDS - (Date.now() - timeStartedMs) / 1000;
@@ -349,7 +439,10 @@ export async function requestWithRetry(
     retryPolicy.requestTimeout != null
       ? retryPolicy.requestTimeout * 1000
       : DEFAULT_HTTP_REQUEST_TIMEOUT_MS;
-  const totalAttempts = retryPolicy.maxAttempts + 1;
+  const totalAttempts = Math.min(
+    retryPolicy.maxAttempts + 1,
+    MAX_HTTP_ATTEMPTS_PER_CALL,
+  );
   const timeStartedMs = Date.now();
 
   for (let attemptNum = 0; attemptNum < totalAttempts; attemptNum += 1) {
@@ -362,7 +455,11 @@ export async function requestWithRetry(
         timeoutMs,
       );
     } catch (error) {
-      if (isTlsOrCertError(error) || attemptNum >= totalAttempts - 1) {
+      if (
+        isTlsOrCertError(error) ||
+        isNonRetryableLocalError(error) ||
+        attemptNum >= totalAttempts - 1
+      ) {
         throw error;
       }
       const waitTimeSeconds = computeWaitBeforeNextAttempt(
@@ -435,8 +532,24 @@ export function raiseForStatusWhenPolicySet(
     response.statusText.length > 0 ? ` ${response.statusText}` : "";
   throw new Error(
     `${requesterDescription} HTTP request failed with status ` +
-      `'${response.status}${statusText}' for url '${url}'.`,
+      `'${response.status}${statusText}' for url '${redactUrlQuery(url)}'.`,
   );
+}
+
+/**
+ * Strip the query string from a URL before it reaches an error message.
+ *
+ * Divergence from Python, whose `raise_for_status` embeds the full URL: this
+ * error surfaces to the model as the tool result and into logs, and templated
+ * query parameters routinely carry credentials. The path is kept so the
+ * message stays diagnostically useful.
+ */
+export function redactUrlQuery(url: string): string {
+  const queryStart = url.indexOf("?");
+  if (queryStart === -1) {
+    return url;
+  }
+  return `${url.slice(0, queryStart)}?<redacted>`;
 }
 
 /**

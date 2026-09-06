@@ -52,8 +52,15 @@ export const RetryPolicySchema: z.ZodType<
   .object({
     /** Maximum number of retries (not counting the initial attempt). */
     maxAttempts: z.number().int().min(0).default(2),
-    /** Per-attempt timeout in seconds (fractional values allowed). */
-    requestTimeout: z.number().gt(0).nullish().default(null),
+    /**
+     * Per-attempt timeout in seconds (fractional values allowed).
+     *
+     * Must be finite: `Infinity` means "no timeout" to Python's httpx, but no
+     * timer can express it, so it is rejected here rather than silently
+     * reinterpreted. Values too large for a timer are clamped when the request
+     * is made (see `clampRequestTimeoutMs`).
+     */
+    requestTimeout: z.number().gt(0).finite().nullish().default(null),
     /** Base delay (seconds) used for exponential backoff. */
     initialRetryDelay: z.number().min(0).default(1.0),
     /** Cap (seconds) on the backoff delay between two retries. */
