@@ -32,8 +32,16 @@ const PROPERTY_ARRAY_FIELDS = new Set(["inputs", "outputs"]);
 /**
  * Fields (camelCase) whose object values are model objects with snake_case keys
  * that need conversion. All other object values are user data with preserved keys.
+ * (RetryPolicy's "service_error_retry_on_any_5xx" needs no special-casing here:
+ * snakeToCamel maps it to "serviceErrorRetryOnAny5xx" correctly.)
  */
-const MODEL_OBJECT_FIELDS = new Set(["defaultGenerationParameters"]);
+const MODEL_OBJECT_FIELDS = new Set([
+  "defaultGenerationParameters",
+  "retryPolicy",
+  "endpoints", // OAuthEndpoints
+  "pkce", // PKCEPolicy
+  "sessionParameters", // SessionParameters
+]);
 
 /** Deserialize a jsonSchema dict into a Property */
 function deserializeProperty(value: unknown): Property {

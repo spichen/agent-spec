@@ -19,6 +19,7 @@ import {
   createAgentSpecializationParameters,
 } from "./agents/specialized-agent.js";
 
+import { LlmConfigSchema, createLlmConfig } from "./llms/generic-llm-config.js";
 import { OpenAiCompatibleConfigSchema, createOpenAiCompatibleConfig } from "./llms/openai-compatible-config.js";
 import { OllamaConfigSchema, createOllamaConfig } from "./llms/ollama-config.js";
 import { VllmConfigSchema, createVllmConfig } from "./llms/vllm-config.js";
@@ -129,6 +130,13 @@ import {
   createConversationSummarizationTransform,
 } from "./transforms/message-transform.js";
 
+import {
+  OAuthConfigSchema,
+  OAuthClientConfigSchema,
+  createOAuthConfig,
+  createOAuthClientConfig,
+} from "./auth.js";
+
 /** Maps componentType string -> Zod schema for that type */
 export const BUILTIN_SCHEMA_MAP: Record<string, z.ZodType> = {
   Agent: AgentSchema,
@@ -140,6 +148,7 @@ export const BUILTIN_SCHEMA_MAP: Record<string, z.ZodType> = {
   SpecializedAgent: SpecializedAgentSchema,
   AgentSpecializationParameters: AgentSpecializationParametersSchema,
 
+  LlmConfig: LlmConfigSchema,
   OpenAiCompatibleConfig: OpenAiCompatibleConfigSchema,
   OllamaConfig: OllamaConfigSchema,
   VllmConfig: VllmConfigSchema,
@@ -193,6 +202,9 @@ export const BUILTIN_SCHEMA_MAP: Record<string, z.ZodType> = {
 
   MessageSummarizationTransform: MessageSummarizationTransformSchema,
   ConversationSummarizationTransform: ConversationSummarizationTransformSchema,
+
+  OAuthConfig: OAuthConfigSchema,
+  OAuthClientConfig: OAuthClientConfigSchema,
 };
 
 // `any` is required here: factory functions have heterogeneous signatures (each expects
@@ -211,6 +223,7 @@ export const BUILTIN_FACTORY_MAP: Record<string, FactoryFn> = {
   SpecializedAgent: createSpecializedAgent,
   AgentSpecializationParameters: createAgentSpecializationParameters,
 
+  LlmConfig: createLlmConfig,
   OpenAiCompatibleConfig: createOpenAiCompatibleConfig,
   OllamaConfig: createOllamaConfig,
   VllmConfig: createVllmConfig,
@@ -264,6 +277,9 @@ export const BUILTIN_FACTORY_MAP: Record<string, FactoryFn> = {
 
   MessageSummarizationTransform: createMessageSummarizationTransform,
   ConversationSummarizationTransform: createConversationSummarizationTransform,
+
+  OAuthConfig: createOAuthConfig,
+  OAuthClientConfig: createOAuthClientConfig,
 };
 
 /** Get the Zod schema for a built-in component type */

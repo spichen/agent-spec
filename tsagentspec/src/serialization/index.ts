@@ -44,5 +44,8 @@ export {
 export { VERSION_GATED_FIELDS } from "./version-gates.js";
 
 // Main serializer/deserializer
-export { AgentSpecSerializer } from "./serializer.js";
+export {
+  AgentSpecSerializer,
+  type DisaggregatedComponentsConfig,
+} from "./serializer.js";
 export { AgentSpecDeserializer } from "./deserializer.js";

@@ -12,6 +12,20 @@ import { SerializationContext } from "./serialization-context.js";
 import { BuiltinsComponentSerializationPlugin } from "./builtin-serialization-plugin.js";
 import type { SerializedDict, DisaggregatedComponentsDict } from "./types.js";
 
+/**
+ * Configuration of the components to disaggregate upon serialization,
+ * mirroring Python's `DisaggregatedComponentsConfigT`. Each item is either:
+ *
+ * - a `ComponentBase`: disaggregated under its own id, or
+ * - a `[ComponentBase, string]` pair: disaggregated under the custom id. The
+ *   custom id is applied only as the serialization-time mapping key (the
+ *   `$referenced_components` registry key and the `$component_ref` target);
+ *   the component itself keeps its own `id` everywhere it is serialized.
+ */
+export type DisaggregatedComponentsConfig = ReadonlyArray<
+  ComponentBase | readonly [ComponentBase, string]
+>;
+
 export class AgentSpecSerializer {
   private plugins: ComponentSerializationPlugin[];
 
@@ -30,7 +44,7 @@ export class AgentSpecSerializer {
     component: ComponentBase,
     options?: {
       agentspecVersion?: AgentSpecVersion;
-      disaggregatedComponents?: ComponentBase[];
+      disaggregatedComponents?: DisaggregatedComponentsConfig;
       exportDisaggregatedComponents?: boolean;
       camelCase?: boolean;
       includeSensitiveFields?: boolean;
@@ -50,15 +64,35 @@ export class AgentSpecSerializer {
       );
     }
 
-    // Build ID mapping for disaggregated components
+    // Normalize the disaggregated config to [component, mappedId] pairs and
+    // build the id mapping (component id -> registry key). Like Python, a
+    // custom id is only the serialization-time mapping key: the component
+    // keeps its own id inside its serialized dump.
+    const convertedConfig: Array<readonly [ComponentBase, string]> = [];
     const componentsIdMapping = new Map<string, string>();
-    for (const disag of disaggregated) {
-      componentsIdMapping.set(disag.id, disag.id);
+    for (const entry of disaggregated) {
+      if (Array.isArray(entry)) {
+        if (entry.length !== 2 || typeof entry[1] !== "string") {
+          throw new Error(
+            `Invalid disaggregated_components entry: ${JSON.stringify(entry)}`,
+          );
+        }
+        const [disagComponent, mappedId] = entry as readonly [
+          ComponentBase,
+          string,
+        ];
+        convertedConfig.push([disagComponent, mappedId]);
+        componentsIdMapping.set(disagComponent.id, mappedId);
+      } else {
+        const disagComponent = entry as ComponentBase;
+        convertedConfig.push([disagComponent, disagComponent.id]);
+        componentsIdMapping.set(disagComponent.id, disagComponent.id);
+      }
     }
 
     // Serialize disaggregated components separately
     const disaggregatedDict: Record<string, SerializedDict> = {};
-    for (const disag of disaggregated) {
+    for (const [disag, mappedId] of convertedConfig) {
       if (disag === component) {
         throw new Error("Cannot disaggregate the root component");
       }
@@ -68,7 +102,7 @@ export class AgentSpecSerializer {
         includeSensitiveFields: includeSensitive,
       });
       const dump = disagCtx.saveToDict(disag, opts.agentspecVersion);
-      disaggregatedDict[disag.id] = dump;
+      disaggregatedDict[mappedId] = dump;
     }
 
     // Serialize the main component
@@ -100,7 +134,7 @@ export class AgentSpecSerializer {
     component: ComponentBase,
     options?: {
       agentspecVersion?: AgentSpecVersion;
-      disaggregatedComponents?: ComponentBase[];
+      disaggregatedComponents?: DisaggregatedComponentsConfig;
       exportDisaggregatedComponents?: boolean;
       indent?: number;
       camelCase?: boolean;
@@ -124,7 +158,7 @@ export class AgentSpecSerializer {
     component: ComponentBase,
     options?: {
       agentspecVersion?: AgentSpecVersion;
-      disaggregatedComponents?: ComponentBase[];
+      disaggregatedComponents?: DisaggregatedComponentsConfig;
       exportDisaggregatedComponents?: boolean;
       camelCase?: boolean;
       includeSensitiveFields?: boolean;

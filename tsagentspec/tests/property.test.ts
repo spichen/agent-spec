@@ -600,8 +600,10 @@ describe("propertiesHaveSameType advanced", () => {
   });
 
   it("should handle schema with non-standard type field", () => {
-    // When type is neither string nor array (e.g. number), normalizeUnionTypes
-    // falls back to empty array for types (line 247)
+    // Python parity: a non-array `type` is wrapped as-is by
+    // normalizeUnionTypes, so the malformed member {type: 42} stays in the
+    // union and the schemas compare unequal instead of the malformed value
+    // being silently dropped.
     const a = {
       jsonSchema: { type: 42, anyOf: [{ type: "string" }] },
       title: "x",
@@ -610,7 +612,8 @@ describe("propertiesHaveSameType advanced", () => {
       jsonSchema: { anyOf: [{ type: "string" }] },
       title: "y",
     } as any;
-    expect(propertiesHaveSameType(a, b)).toBe(true);
+    expect(propertiesHaveSameType(a, b)).toBe(false);
+    expect(propertiesHaveSameType(a, a)).toBe(true);
   });
 
   it("should handle normalizeUnionTypes with array and object in type list", () => {

@@ -6,6 +6,7 @@
  */
 import { BUILTIN_SCHEMA_MAP } from "../component-registry.js";
 import type { ComponentBase } from "../component.js";
+import { RETRY_POLICY_WIRE_KEY_OVERRIDES } from "../retry-policy.js";
 import { isSensitiveField } from "../sensitive-field.js";
 import type { ComponentSerializationPlugin } from "./serialization-plugin.js";
 import type { SerializationContext } from "./serialization-context.js";
@@ -14,12 +15,29 @@ import { OPAQUE_FIELDS, sanitizeOpaqueField, type SerializedFields } from "./typ
 /** Fields that are internal and should not appear in serialized output */
 const EXCLUDED_FIELDS = new Set(["componentType"]);
 
+/** Per-field serialization config for model-object fields. */
+interface ModelObjectFieldConfig {
+  /** Whether null/undefined entries are dropped from the dump. */
+  excludeNulls: boolean;
+  /** camelCase key -> exact wire key, for names camelToSnake cannot produce. */
+  keyOverrides?: Record<string, string>;
+}
+
 /**
  * Fields that contain model objects (not components, not user data) that need
- * their keys converted to snake_case. Maps fieldName -> whether to exclude nulls.
+ * their keys converted to snake_case.
  */
-const MODEL_OBJECT_FIELDS: Record<string, boolean> = {
-  defaultGenerationParameters: true, // LlmGenerationConfig - exclude nulls
+const MODEL_OBJECT_FIELDS: Record<string, ModelObjectFieldConfig> = {
+  defaultGenerationParameters: { excludeNulls: true }, // LlmGenerationConfig
+  // RetryPolicy / OAuthEndpoints / PKCEPolicy match Python's model_dump,
+  // which keeps null values.
+  retryPolicy: {
+    excludeNulls: false,
+    keyOverrides: RETRY_POLICY_WIRE_KEY_OVERRIDES as Record<string, string>,
+  },
+  endpoints: { excludeNulls: false }, // OAuthEndpoints
+  pkce: { excludeNulls: false }, // PKCEPolicy
+  sessionParameters: { excludeNulls: false }, // SessionParameters
 };
 
 function hasSerializedSensitiveValue(value: unknown): boolean {
@@ -85,9 +103,11 @@ export class BuiltinsComponentSerializationPlugin
         fieldValue !== null &&
         !Array.isArray(fieldValue)
       ) {
+        const modelObjectConfig = MODEL_OBJECT_FIELDS[fieldName]!;
         serialized[snakeName] = context.dumpModelObject(
           fieldValue as Record<string, unknown>,
-          MODEL_OBJECT_FIELDS[fieldName]!,
+          modelObjectConfig.excludeNulls,
+          modelObjectConfig.keyOverrides,
         );
         continue;
       }

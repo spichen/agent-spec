@@ -73,6 +73,33 @@ describe("MCPTool", () => {
     });
     expect(Object.isFrozen(tool)).toBe(true);
   });
+
+  it("should accept a partial semantic retryPolicy, filling defaults", () => {
+    const transport = createStdioTransport({
+      name: "stdio",
+      command: "node",
+    });
+    const tool = createMCPTool({
+      name: "mcp-tool",
+      clientTransport: transport,
+      retryPolicy: { maxAttempts: 3, initialRetryDelay: 0.25 },
+    });
+    expect(tool.retryPolicy?.maxAttempts).toBe(3);
+    expect(tool.retryPolicy?.initialRetryDelay).toBe(0.25);
+    expect(tool.retryPolicy?.maxRetryDelay).toBe(8.0);
+  });
+
+  it("should leave retryPolicy undefined by default", () => {
+    const transport = createStdioTransport({
+      name: "stdio",
+      command: "node",
+    });
+    const tool = createMCPTool({
+      name: "mcp-tool",
+      clientTransport: transport,
+    });
+    expect(tool.retryPolicy).toBeUndefined();
+  });
 });
 
 describe("MCPToolSpec", () => {

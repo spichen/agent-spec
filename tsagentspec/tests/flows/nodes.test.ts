@@ -513,6 +513,32 @@ describe("ApiNode", () => {
     });
     expect(node.branches).toEqual([DEFAULT_NEXT_BRANCH]);
   });
+
+  it("should leave urlAllowList and retryPolicy undefined by default", () => {
+    const node = createApiNode({
+      name: "api",
+      url: "https://api.example.com",
+      httpMethod: "GET",
+    });
+    expect(node.urlAllowList).toBeUndefined();
+    expect(node.retryPolicy).toBeUndefined();
+  });
+
+  it("should accept urlAllowList and a partial retryPolicy, filling defaults", () => {
+    const node = createApiNode({
+      name: "api",
+      url: "https://api.example.com/orders/{{order_id}}",
+      httpMethod: "GET",
+      urlAllowList: ["https://api.example.com/orders/"],
+      retryPolicy: { maxAttempts: 3, requestTimeout: 0.5 },
+    });
+    expect(node.urlAllowList).toEqual(["https://api.example.com/orders/"]);
+    expect(node.retryPolicy?.maxAttempts).toBe(3);
+    expect(node.retryPolicy?.requestTimeout).toBe(0.5);
+    expect(node.retryPolicy?.initialRetryDelay).toBe(1.0);
+    expect(node.retryPolicy?.maxRetryDelay).toBe(8.0);
+    expect(node.retryPolicy?.jitter).toBe("full_and_equal_for_throttle");
+  });
 });
 
 describe("InputMessageNode", () => {

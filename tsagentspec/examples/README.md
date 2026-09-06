@@ -14,6 +14,7 @@ These examples demonstrate how to use the `agentspec` TypeScript SDK to define A
 | 6 | [06-serialization.ts](./06-serialization.ts) | JSON/YAML serialization, camelCase, disaggregated components |
 | 7 | [07-a2a-agent.ts](./07-a2a-agent.ts) | A2A (Agent-to-Agent) protocol and remote agents |
 | 8 | [08-datastores.ts](./08-datastores.ts) | In-memory, Oracle DB, and PostgreSQL datastores |
+| 9 | [09-langgraph-adapter.ts](./09-langgraph-adapter.ts) | LangGraph adapter: load a spec into a runnable agent, export a StateGraph |
 
 ## Running
 

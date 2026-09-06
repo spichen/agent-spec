@@ -18,8 +18,33 @@ import { OutputMessageNodeSchema } from "./output-message-node.js";
 import { CatchExceptionNodeSchema } from "./catch-exception-node.js";
 import { registerNodeUnionSchema } from "../lazy-schemas.js";
 
+/**
+ * Explicit annotation: the inferred type exceeds the declaration-emit size
+ * limit (TS7056); spelling it out keeps the emitted type symbolic while
+ * preserving the discriminated-union surface (`.options` etc.).
+ */
+type NodeUnionSchema = z.ZodDiscriminatedUnion<
+  "componentType",
+  [
+    typeof StartNodeSchema,
+    typeof EndNodeSchema,
+    typeof LlmNodeSchema,
+    typeof ToolNodeSchema,
+    typeof AgentNodeSchema,
+    typeof FlowNodeSchema,
+    typeof BranchingNodeSchema,
+    typeof MapNodeSchema,
+    typeof ParallelMapNodeSchema,
+    typeof ParallelFlowNodeSchema,
+    typeof ApiNodeSchema,
+    typeof InputMessageNodeSchema,
+    typeof OutputMessageNodeSchema,
+    typeof CatchExceptionNodeSchema,
+  ]
+>;
+
 /** Discriminated union of all node types */
-export const NodeUnion = z.discriminatedUnion("componentType", [
+export const NodeUnion: NodeUnionSchema = z.discriminatedUnion("componentType", [
   StartNodeSchema,
   EndNodeSchema,
   LlmNodeSchema,

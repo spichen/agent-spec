@@ -3,6 +3,7 @@
  */
 import { z } from "zod";
 import { ComponentBaseSchema } from "../component.js";
+import { RetryPolicySchema } from "../retry-policy.js";
 import { LlmGenerationConfigSchema, OpenAIAPIType } from "./llm-config.js";
 
 export const OpenAiCompatibleConfigSchema = ComponentBaseSchema.extend({
@@ -14,6 +15,7 @@ export const OpenAiCompatibleConfigSchema = ComponentBaseSchema.extend({
     .default(OpenAIAPIType.CHAT_COMPLETIONS),
   defaultGenerationParameters: LlmGenerationConfigSchema.optional(),
   apiKey: z.string().optional(),
+  retryPolicy: RetryPolicySchema.optional(),
 });
 
 export type OpenAiCompatibleConfig = z.infer<
@@ -30,6 +32,7 @@ export function createOpenAiCompatibleConfig(opts: {
   apiType?: OpenAIAPIType;
   defaultGenerationParameters?: z.infer<typeof LlmGenerationConfigSchema>;
   apiKey?: string;
+  retryPolicy?: z.input<typeof RetryPolicySchema>;
 }): OpenAiCompatibleConfig {
   const raw = {
     ...opts,

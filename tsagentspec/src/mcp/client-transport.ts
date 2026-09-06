@@ -2,7 +2,9 @@
  * MCP client transport types.
  */
 import { z } from "zod";
+import { AuthConfigUnion, type AuthConfig } from "../auth.js";
 import { ComponentBaseSchema } from "../component.js";
+import { RetryPolicySchema } from "../retry-policy.js";
 
 const SessionParametersSchema = z.object({
   readTimeoutSeconds: z.number().default(60.0),
@@ -24,8 +26,12 @@ export type StdioTransport = z.infer<typeof StdioTransportSchema>;
 
 const RemoteTransportBaseSchema = ClientTransportBaseSchema.extend({
   url: z.string(),
+  /** Auth configuration used to authenticate requests to the remote MCP server. */
+  auth: AuthConfigUnion.optional(),
   headers: z.record(z.string()).optional(),
   sensitiveHeaders: z.record(z.string()).optional(),
+  /** Optional retry configuration for requests sent through this remote transport. */
+  retryPolicy: RetryPolicySchema.optional(),
 });
 
 export const SSETransportSchema = RemoteTransportBaseSchema.extend({
@@ -105,8 +111,10 @@ export function createSSETransport(opts: {
   id?: string;
   description?: string;
   metadata?: Record<string, unknown>;
+  auth?: AuthConfig;
   headers?: Record<string, string>;
   sensitiveHeaders?: Record<string, string>;
+  retryPolicy?: z.input<typeof RetryPolicySchema>;
   sessionParameters?: { readTimeoutSeconds?: number };
 }): SSETransport {
   return Object.freeze(
@@ -126,8 +134,10 @@ export function createSSEmTLSTransport(opts: {
   id?: string;
   description?: string;
   metadata?: Record<string, unknown>;
+  auth?: AuthConfig;
   headers?: Record<string, string>;
   sensitiveHeaders?: Record<string, string>;
+  retryPolicy?: z.input<typeof RetryPolicySchema>;
   sessionParameters?: { readTimeoutSeconds?: number };
 }): SSEmTLSTransport {
   return Object.freeze(
@@ -144,8 +154,10 @@ export function createStreamableHTTPTransport(opts: {
   id?: string;
   description?: string;
   metadata?: Record<string, unknown>;
+  auth?: AuthConfig;
   headers?: Record<string, string>;
   sensitiveHeaders?: Record<string, string>;
+  retryPolicy?: z.input<typeof RetryPolicySchema>;
   sessionParameters?: { readTimeoutSeconds?: number };
 }): StreamableHTTPTransport {
   return Object.freeze(
@@ -165,8 +177,10 @@ export function createStreamableHTTPmTLSTransport(opts: {
   id?: string;
   description?: string;
   metadata?: Record<string, unknown>;
+  auth?: AuthConfig;
   headers?: Record<string, string>;
   sensitiveHeaders?: Record<string, string>;
+  retryPolicy?: z.input<typeof RetryPolicySchema>;
   sessionParameters?: { readTimeoutSeconds?: number };
 }): StreamableHTTPmTLSTransport {
   return Object.freeze(
@@ -183,8 +197,10 @@ export function createRemoteTransport(opts: {
   id?: string;
   description?: string;
   metadata?: Record<string, unknown>;
+  auth?: AuthConfig;
   headers?: Record<string, string>;
   sensitiveHeaders?: Record<string, string>;
+  retryPolicy?: z.input<typeof RetryPolicySchema>;
   sessionParameters?: { readTimeoutSeconds?: number };
 }): RemoteTransport {
   return Object.freeze(

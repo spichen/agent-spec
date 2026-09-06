@@ -3,6 +3,7 @@
  */
 import { z } from "zod";
 import type { Property } from "../../property.js";
+import { RetryPolicySchema } from "../../retry-policy.js";
 import { getPlaceholderPropertiesFromJsonObject } from "../../templating.js";
 import { NodeBaseSchema, DEFAULT_NEXT_BRANCH } from "../node.js";
 
@@ -17,6 +18,13 @@ export const ApiNodeSchema = NodeBaseSchema.extend({
   queryParams: z.record(z.unknown()).default({}),
   headers: z.record(z.unknown()).default({}),
   sensitiveHeaders: z.record(z.unknown()).default({}),
+  /**
+   * Optional list of allowed URLs or URL prefixes for the rendered request
+   * URL: scheme and authority match exactly, path by prefix.
+   */
+  urlAllowList: z.array(z.string()).optional(),
+  /** Optional retry configuration for the API call performed by this node. */
+  retryPolicy: RetryPolicySchema.optional(),
 });
 
 export type ApiNode = z.infer<typeof ApiNodeSchema>;
@@ -51,6 +59,8 @@ export function createApiNode(opts: {
   queryParams?: Record<string, unknown>;
   headers?: Record<string, unknown>;
   sensitiveHeaders?: Record<string, unknown>;
+  urlAllowList?: string[];
+  retryPolicy?: z.input<typeof RetryPolicySchema>;
   inputs?: Property[];
   outputs?: Property[];
 }): ApiNode {

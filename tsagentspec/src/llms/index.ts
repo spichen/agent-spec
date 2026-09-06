@@ -2,14 +2,21 @@
  * LLM config types barrel export.
  */
 import { z } from "zod";
+import { LlmConfigSchema } from "./generic-llm-config.js";
 import { OpenAiCompatibleConfigSchema } from "./openai-compatible-config.js";
 import { OllamaConfigSchema } from "./ollama-config.js";
 import { VllmConfigSchema } from "./vllm-config.js";
 import { OpenAiConfigSchema } from "./openai-config.js";
 import { OciGenAiConfigSchema } from "./oci-genai-config.js";
 
-/** Discriminated union of all LLM config types */
+/**
+ * Discriminated union of all LLM config types. The bare LlmConfig component
+ * (wire component_type "LlmConfig") is a member; the union keeps the public
+ * `LlmConfig` type name, so the bare component's TS type is exported as
+ * `GenericLlmConfig`.
+ */
 export const LlmConfigUnion = z.discriminatedUnion("componentType", [
+  LlmConfigSchema,
   OpenAiCompatibleConfigSchema,
   OllamaConfigSchema,
   VllmConfigSchema,
@@ -24,6 +31,12 @@ export {
   OpenAIAPIType,
   type LlmGenerationConfig,
 } from "./llm-config.js";
+
+export {
+  LlmConfigSchema,
+  createLlmConfig,
+  type GenericLlmConfig,
+} from "./generic-llm-config.js";
 
 export {
   OpenAiCompatibleConfigSchema,
