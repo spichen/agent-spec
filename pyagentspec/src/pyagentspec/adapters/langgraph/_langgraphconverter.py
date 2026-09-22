@@ -1458,12 +1458,25 @@ class AgentSpecToLangGraphConverter:
         output_model: Optional[type[BaseModel]] = None
         state_schema: Optional[Any] = None
 
-        # Build response (output) model (used for response_format). A single
-        # string output is taken from the agent's final message (see
-        # extract_outputs_from_invoke_result), so it needs no structured
-        # generation — mirrors LlmNodeExecutor and lets a string output work on
-        # models without structured-output support.
-        if outputs and not is_single_string_output(outputs):
+        # Build response (output) model (used for response_format).
+        #
+        # Gate on the DECLARED output format, not on the shape of `outputs`.
+        # AgentFabric gives every agent an output port, so a plain text agent and
+        # a JSON agent with one string field produce an identical `outputs` list
+        # and cannot be told apart by shape. Asking "did the caller declare JSON?"
+        # is the only reliable signal; the previous `is_single_string_output`
+        # heuristic silently answered in prose for one-field JSON schemas.
+        #
+        # A caller that declares no format keeps the old shape heuristic, so a
+        # plain pyagentspec user still gets structured output for multi-field
+        # outputs and free text for a lone string.
+        declared_format = str((agent.metadata or {}).get("outputFormat", "")).upper()
+        wants_structured = (
+            declared_format == "JSON"
+            if declared_format in ("JSON", "TEXT")
+            else not is_single_string_output(outputs)
+        )
+        if outputs and wants_structured:
             output_model = create_pydantic_model_from_properties("AgentOutputModel", outputs)
 
         if inputs:
