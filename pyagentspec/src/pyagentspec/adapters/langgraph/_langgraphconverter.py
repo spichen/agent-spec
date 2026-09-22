@@ -38,6 +38,7 @@ from pyagentspec.adapters._utils import (
     _build_type_from_schema,
     create_pydantic_model_from_properties,
 )
+from pyagentspec.adapters.langgraph._agent_output_guard import StructuredOutputGuard
 from pyagentspec.adapters.langgraph._node_execution import (
     NodeExecutor,
     extract_outputs_from_invoke_result,
@@ -1494,6 +1495,17 @@ class AgentSpecToLangGraphConverter:
             response_format=output_model,
             state_schema=state_schema,
         )
+        if output_model is not None:
+            # Rebuild rather than append: `middleware` is shared across every agent of a
+            # swarm / manager-workers graph.
+            middleware = [
+                *middleware,
+                StructuredOutputGuard(
+                    agent_name=name,
+                    output_titles=[output.title for output in outputs],
+                    model_id=llm_config.model_id,
+                ),
+            ]
         if middleware:
             create_agent_kwargs["middleware"] = middleware
         compiled_graph = langchain_agents.create_agent(**create_agent_kwargs)
