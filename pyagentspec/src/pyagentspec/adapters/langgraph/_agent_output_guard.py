@@ -18,7 +18,7 @@ ways, depending on whether the agent has real tools:
 
 :class:`StructuredOutputGuard` covers both. An agent whose only declared output is a
 string avoids the problem entirely, since ``response_format`` is skipped for it (see
-:func:`pyagentspec.adapters._utils.is_single_string_output`).
+:func:`pyagentspec.adapters.langgraph._node_execution.is_single_string_output`).
 """
 
 from functools import lru_cache
@@ -79,6 +79,7 @@ class StructuredOutputGuard(AgentMiddleware):
         output_titles: List[str],
         model_id: str,
         max_attempts: int = DEFAULT_MAX_STRUCTURED_OUTPUT_ATTEMPTS,
+        remedy: Optional[str] = None,
     ) -> None:
         super().__init__()
         self.state_schema = _structured_output_attempt_state_schema()
@@ -86,14 +87,16 @@ class StructuredOutputGuard(AgentMiddleware):
         self.output_titles = output_titles
         self.model_id = model_id
         self.max_attempts = max_attempts
+        self.remedy = remedy or (
+            "Declare a single string output to get the model's free text instead, or use a "
+            "model that supports structured output."
+        )
 
     def _fail(self, detail: str) -> NoReturn:
         raise StructuredOutputNotProducedError(
             f"Agent {self.agent_name!r} did not produce a structured response matching its "
             f"declared outputs ({', '.join(self.output_titles)}). {detail} Model "
-            f"{self.model_id!r} may not support structured output. Declare a single string "
-            f"output to get the model's free text instead, or use a model that supports "
-            f"structured output."
+            f"{self.model_id!r} may not support structured output. {self.remedy}"
         )
 
     # No async variants: LangGraph routes async runs to the sync hooks, and both are pure.

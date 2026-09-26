@@ -1458,6 +1458,7 @@ class AgentSpecToLangGraphConverter:
         )
         output_model: Optional[type[BaseModel]] = None
         state_schema: Optional[Any] = None
+        response_format: Any = None
 
         # Build response (output) model (used for response_format).
         #
@@ -1478,7 +1479,24 @@ class AgentSpecToLangGraphConverter:
             else not is_single_string_output(outputs)
         )
         if outputs and wants_structured:
-            output_model = create_pydantic_model_from_properties("AgentOutputModel", outputs)
+            output_model = create_pydantic_model_from_properties(
+                "AgentOutputModel",
+                outputs,
+                # Some provider integrations reject a tool schema without a description.
+                description="Structured output for the agent.",
+            )
+            # Explicitly use ToolStrategy instead of letting LangChain select a provider
+            # strategy. OpenAI-compatible models do not necessarily support provider-native
+            # structured output, and may otherwise return a plain AIMessage without the
+            # structured_response state entry after a client-tool resume.
+            from langchain.agents.structured_output import ToolStrategy
+
+            response_format = ToolStrategy(output_model)
+            system_prompt = (
+                f"{system_prompt}\n\n"
+                "After using the available tools, provide the final result by calling the "
+                "structured output tool. Do not respond with a plain-text final answer."
+            )
 
         if inputs:
             state_schema = _create_agent_state_typed_dict(
@@ -1492,7 +1510,7 @@ class AgentSpecToLangGraphConverter:
             tools=langgraph_tools,
             system_prompt=system_prompt,
             checkpointer=checkpointer,
-            response_format=output_model,
+            response_format=response_format,
             state_schema=state_schema,
         )
         if output_model is not None:
@@ -1504,6 +1522,14 @@ class AgentSpecToLangGraphConverter:
                     agent_name=name,
                     output_titles=[output.title for output in outputs],
                     model_id=llm_config.model_id,
+                    # Only reachable for a single string output when JSON was declared,
+                    # so the generic "declare a single string output" advice would not help.
+                    remedy=(
+                        "Set outputFormat to TEXT to get the model's free text instead, "
+                        "or use a model that supports structured output."
+                        if is_single_string_output(outputs)
+                        else None
+                    ),
                 ),
             ]
         if middleware:

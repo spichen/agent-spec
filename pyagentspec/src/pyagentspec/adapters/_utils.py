@@ -5,7 +5,7 @@
 # (UPL) 1.0 (LICENSE-UPL or https://oss.oracle.com/licenses/upl), at your option.
 
 import re
-from typing import Any, Dict, List, Literal, Tuple, Union
+from typing import Any, Dict, List, Literal, Optional, Tuple, Union
 
 from pydantic import BaseModel, ConfigDict, Field, create_model
 
@@ -243,8 +243,12 @@ def _build_type_from_schema(
 
 
 def create_pydantic_model_from_properties(
-    model_name: str, properties: List[AgentSpecProperty]
+    model_name: str,
+    properties: List[AgentSpecProperty],
+    description: Optional[str] = None,
 ) -> type[BaseModel]:
+    # `description` becomes the model docstring, which LangChain uses as the tool
+    # description when the model is passed as a structured-output schema.
     registry = SchemaRegistry()
     fields: Dict[str, Tuple[Any, Any]] = {}
 
@@ -263,7 +267,7 @@ def create_pydantic_model_from_properties(
 
         fields[property_.title] = (annotation, default_field)
 
-    return create_model(model_name, **fields)  # type: ignore
+    return create_model(model_name, __doc__=description, **fields)  # type: ignore
 
 
 def _get_obj_reference(obj: Any) -> str:
